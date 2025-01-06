@@ -42,6 +42,7 @@
 #include "debug.h"
 #include "alloc-inl.h"
 #include "hash.h"
+#include "afl-fuzz.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -239,38 +240,6 @@ static s32 cpu_aff = -1;       	      /* Selected CPU core                */
 
 static FILE* plot_file;               /* Gnuplot output file              */
 
-struct queue_entry {
-
-  u8* fname;                          /* File name for the test case      */
-  u32 len;                            /* Input length                     */
-
-  u8  cal_failed,                     /* Calibration failed?              */
-      trim_done,                      /* Trimmed?                         */
-      was_fuzzed,                     /* Had any fuzzing done yet?        */
-      handled_in_cycle,               /* Was handled in current cycle?    */
-      passed_det,                     /* Deterministic stages passed?     */
-      has_new_cov,                    /* Triggers new coverage?           */
-      var_behavior,                   /* Variable behavior?               */
-      favored,                        /* Currently favored?               */
-      fs_redundant;                   /* Marked as redundant in the fs?   */
-
-  u32 bitmap_size,                    /* Number of bits set in bitmap     */
-      exec_cksum;                     /* Checksum of the execution trace  */
-
-  u64 prox_score;                     /* Proximity score of the test case */
-  u32 entry_id;                       /* The ID assigned to the test case */
-
-  u64 exec_us,                        /* Execution time (us)              */
-      handicap,                       /* Number of queue cycles behind    */
-      depth;                          /* Path depth                       */
-
-  u8* trace_mini;                     /* Trace bytes, if kept             */
-  u32 tc_ref;                         /* Trace bytes ref count            */
-
-  struct queue_entry *next;           /* Next element, if any             */
-
-};
-
 static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
                           *queue_cur, /* Current offset within the queue  */
                           *queue_last;/* Lastly added to the queue        */
@@ -309,6 +278,9 @@ static u8* (*post_handler)(u8* buf, u32* len);
 static s8  interesting_8[]  = { INTERESTING_8 };
 static s16 interesting_16[] = { INTERESTING_8, INTERESTING_16 };
 static s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
+
+/* CLUDAFL */
+static FILE* unique_dafl_log_file = NULL;
 
 /* Fuzzing stages */
 
@@ -351,6 +323,16 @@ enum {
   /* 05 */ FAULT_NOBITS
 };
 
+#define LOGF(x...) do { \
+    if (unique_dafl_log_file) { \
+      fprintf(unique_dafl_log_file, x); \
+    } \
+  } while (0)
+
+
+static u8 check_valid_res(u8 res) {
+  return res == FAULT_CRASH || res == FAULT_NONE;
+}
 
 /* Get unix time in milliseconds */
 
@@ -2710,7 +2692,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
 
-    if (stop_soon || fault != crash_mode) goto abort_calibration;
+    if (stop_soon || !check_valid_res(fault)) goto abort_calibration;
 
     if (!dumb_mode && !stage_cur && !count_bytes(trace_bits)) {
       fault = FAULT_NOINST;
@@ -2874,7 +2856,7 @@ static void perform_dry_run(char** argv) {
 
         if (q == queue) check_map_coverage();
 
-        if (crash_mode) FATAL("Test case '%s' does *NOT* crash", fn);
+        // if (crash_mode) FATAL("Test case '%s' does *NOT* crash", fn);
 
         break;
 
@@ -2919,7 +2901,7 @@ static void perform_dry_run(char** argv) {
 
       case FAULT_CRASH:
 
-        if (crash_mode) break;
+        break;
 
         if (skip_crashes) {
           WARNF("Test case results in a crash (skipping)");
@@ -3965,6 +3947,10 @@ static void maybe_delete_out_dir(void) {
   }
 
   fn = alloc_printf("%s/plot_data", out_dir);
+  if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
+  ck_free(fn);
+
+  fn = alloc_printf("%s/unique_dafl.log", out_dir);
   if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
@@ -5196,7 +5182,7 @@ static u8 fuzz_one(char** argv) {
 
     }
 
-    if (stop_soon || res != crash_mode) {
+    if (stop_soon || !check_valid_res(res)) {
       cur_skipped_paths++;
       goto abandon_entry;
     }
@@ -7373,6 +7359,14 @@ EXP_ST void setup_dirs_fds(void) {
                      "pending_total, pending_favs, map_size, unique_crashes, "
                      "unique_hangs, max_depth, execs_per_sec\n");
                      /* ignore errors */
+
+
+  tmp = alloc_printf("%s/unique_dafl.log", out_dir);
+  fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+  unique_dafl_log_file = fdopen(fd, "w");
+  if (!unique_dafl_log_file) PFATAL("fdopen() failed");
 
 }
 
