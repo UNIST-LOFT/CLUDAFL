@@ -280,7 +280,9 @@ static s16 interesting_16[] = { INTERESTING_8, INTERESTING_16 };
 static s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
 
 /* CLUDAFL */
-static FILE* unique_dafl_log_file = NULL;
+static FILE* unique_dafl_log_file = NULL; // log file
+static struct vector *dfg_info_vector = NULL; // vector<struct proximity_score *> for dfg info
+
 
 /* Fuzzing stages */
 
@@ -7869,6 +7871,28 @@ static void save_cmdline(u32 argc, char** argv) {
 
 }
 
+void init_dfg(char *dfg_filename) {
+  dfg_info_vector = vector_create();
+  FILE *file = fopen(dfg_filename, "r");
+  if (file == NULL) {
+    FATAL("Failed to open dfg file");
+  }
+  u32 index = 0, max_score = 0;
+  u32 score, max_paths;
+  u8 node_name[256];
+  while (fscanf(file, "%d %d %255s", &score, &max_paths, node_name) == 3) {
+    struct dfg_node_info *node_info = ck_alloc(sizeof(struct dfg_node_info));
+    node_info->score = score;
+    node_info->idx = index;
+    node_info->max_paths = max_paths;
+    push_back(dfg_info_vector, node_info);
+    if (score > max_score) {
+      max_score = score;
+    }
+    index++;
+  }
+  fclose(file);
+}
 
 #ifndef AFL_LIB
 
@@ -7894,7 +7918,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:p:")) > 0)
 
     switch (opt) {
 
@@ -8082,6 +8106,13 @@ int main(int argc, char** argv) {
           }
         }
 
+        break;
+
+      case 'p': {
+          
+          init_dfg(optarg);
+        
+        }
         break;
 
       default:
