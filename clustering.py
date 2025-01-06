@@ -26,17 +26,22 @@ def kmeans(vectors:Dict[str, List[int]], k:int=5):
     return {name:cluster for name,cluster in zip(vectors.keys(),res)}
 
 def bisecting_kmeans(vectors:Dict[str, List[int]], k:int=5):
-    pass
+    kmeans = cluster.BisectingKMeans(n_clusters=k)
+    res=kmeans.fit_predict(list(vectors.values())) # res: array[int] of cluster ids
+    return {name:cluster for name,cluster in zip(vectors.keys(),res)}
 
 if __name__=='__main__':
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('vector-path', action='store', type=str, help='Path to the directory containing the vectors')
     arg_parser.add_argument('output-path', action='store', type=str, help='Path to the output file')
-    arg_parser.add_argument('cluster', action='store', type=str, help='Type of cluster',choices=['k-means'])
+    arg_parser.add_argument('cluster', action='store', type=str, help='Type of cluster',choices=['kmeans','bisecting-kmeans'])
     arg_parser.add_argument('--k', action='store', type=int, help='Number of clusters', default=5)
     args = arg_parser.parse_args()
 
     vectors=parse_vectors(args.vector_path)
-    if args.cluster=='k-means':
+    if args.cluster=='kmeans':
         clusters=kmeans(vectors,args.k)
+        save_clusters(clusters,args.output_path)
+    elif args.cluster=='bisecting-kmeans':
+        clusters=bisecting_kmeans(vectors,args.k)
         save_clusters(clusters,args.output_path)
