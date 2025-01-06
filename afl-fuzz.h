@@ -6,6 +6,7 @@
 #define DAFL_AFL_FUZZ_H
 #include "types.h"
 #include "debug.h"
+#include "alloc-inl.h"
 
 // For interval tree: should be power of 2
 #define INTERVAL_SIZE 1024
@@ -25,34 +26,6 @@ struct dfg_node_info {
   u32 score;
   u32 max_paths;
 };
-
-enum AddQueueMode {
-  ADD_QUEUE_DEFAULT = 0, // default: found new branch coverage
-  ADD_QUEUE_UNIQUE_VAL = 1,
-  ADD_QUEUE_UNIQUE_VAL_PER_PATH = 2,
-  ADD_QUEUE_ALL = 3, // unique_val_per_path + default
-  ADD_QUEUE_NONE = 4,
-  ADD_QUEUE_UNIQUE_VAL_PER_PATH_IN_VER = 5,
-  ADD_QUEUE_UNIQUE_VAL_PER_PATH_IN_VER_PLUS_DEF = 6,
-};
-
-enum ParetoStatus {
-  PARETO_UNINITIALIZED = 0,
-  PARETO_FRONTIER = 1,
-  PARETO_DOMINATED = 2,
-  PARETO_NEWLY_ADDED = 3,
-  PARETO_RECYCLED = 4,
-};
-
-struct pareto_info {
-  enum ParetoStatus status;
-  u32 index;
-};
-
-void pareto_info_set(struct pareto_info *info, enum ParetoStatus status, u32 index) {
-  info->status = status;
-  info->index = index;
-}
 
 struct queue_entry {
 
@@ -86,57 +59,16 @@ struct queue_entry {
 
 };
 
-
-u32 quantize_location(double loc) {
-  return (u32)(loc * INTERVAL_SIZE);
-}
-
-// Binary tree
-struct interval_node {
-  u32 start;
-  u32 end;
-  u64 count;
-  u64 score;
-  struct interval_node *left;
-  struct interval_node *right;
-};
-
-struct interval_tree {
-  u64 count[INTERVAL_SIZE];
-  u64 score[INTERVAL_SIZE];
-  struct interval_node *root;
-};
-
-struct interval_node *interval_node_create(u32 start, u32 end);
-
-void interval_node_free(struct interval_node *node);
-
-double interval_tree_query(struct interval_tree *tree, struct interval_node *node);
-
-double interval_node_ratio(struct interval_node *node);
-
-struct interval_node *interval_node_insert(struct interval_tree *tree, struct interval_node *node, u32 key, u32 value);
-
-struct interval_tree *interval_tree_create();
-
-void interval_tree_free(struct interval_tree *tree);
-
-void interval_tree_insert(struct interval_tree *tree, u32 key, u32 value);
-
-u32 interval_node_select(struct interval_node *node);
-
-u32 interval_tree_select(struct interval_tree *tree);
-
 // Define the vector structure
 struct vector {
-  struct queue_entry **data;
+  void **data;
   size_t size;     // Number of elements currently in the vector
   size_t capacity; // Capacity of the vector (allocated memory size)
 };
 
 // Function to initialize a new vector
 struct vector* vector_create(void) {
-  struct vector* vec = ck_alloc(sizeof(struct vector));
+  struct vector* vec = (struct vector *)ck_alloc(sizeof(struct vector));
   if (vec == NULL) {
     printf("Memory allocation failed.\n");
     exit(EXIT_FAILURE);
@@ -152,14 +84,14 @@ struct vector* vector_clone(struct vector *vec) {
   if (vec->size == 0) return new_vec;
   new_vec->size = vec->size;
   new_vec->capacity = vec->size + 1;
-  new_vec->data = ck_alloc(new_vec->capacity * sizeof(struct queue_entry*));
-  memcpy(new_vec->data, vec->data, vec->size * sizeof(struct queue_entry*));
+  new_vec->data = (void**)ck_alloc(new_vec->capacity * sizeof(void *));
+  memcpy(new_vec->data, vec->data, vec->size * sizeof(void *));
   return new_vec;
 }
 
 void vector_clear(struct vector *vec) {
   vec->size = 0;
-  memset(vec->data, 0, vec->capacity * sizeof(struct queue_entry*));
+  memset(vec->data, 0, vec->capacity * sizeof(void *));
 }
 
 void vector_reduce(struct vector *vec) {
@@ -174,11 +106,11 @@ void vector_reduce(struct vector *vec) {
 }
 
 // Function to add an element to the end of the vector
-void push_back(struct vector* vec, struct queue_entry* element) {
+void push_back(struct vector* vec, void* element) {
   if (vec->size >= vec->capacity) {
     // Increase capacity by doubling it
     vec->capacity = (vec->capacity == 0) ? 8 : vec->capacity * 2;
-    vec->data = (struct queue_entry**)ck_realloc(vec->data, vec->capacity * sizeof(struct queue_entry*));
+    vec->data = (void **)ck_realloc(vec->data, vec->capacity * sizeof(void *));
     if (vec->data == NULL) {
       printf("Memory allocation failed.\n");
       exit(EXIT_FAILURE);
@@ -187,7 +119,7 @@ void push_back(struct vector* vec, struct queue_entry* element) {
   vec->data[vec->size++] = element;
 }
 
-void vector_push_front(struct vector *vec, struct queue_entry *element) {
+void vector_push_front(struct vector *vec, void *element) {
   push_back(vec, element);
   for (u32 i = vec->size - 1; i > 0; i--) {
     vec->data[i] = vec->data[i - 1];
@@ -195,18 +127,18 @@ void vector_push_front(struct vector *vec, struct queue_entry *element) {
   vec->data[0] = element;
 }
 
-struct queue_entry * vector_pop_back(struct vector *vec) {
+void *vector_pop_back(struct vector *vec) {
   if (vec->size == 0) return NULL;
-  struct queue_entry *entry = vec->data[vec->size - 1];
+  void *entry = vec->data[vec->size - 1];
   vec->size--;
   vec->data[vec->size] = NULL;
   return entry;
 }
 
-struct queue_entry *vector_pop(struct vector *vec, u32 index) {
+void *vector_pop(struct vector *vec, u32 index) {
   if (index >= vec->size) return NULL;
   if (index == vec->size - 1) return vector_pop_back(vec);
-  struct queue_entry *entry = vec->data[index];
+  void *entry = vec->data[index];
   for (u32 i = index; i < vec->size - 1; i++) {
     vec->data[i] = vec->data[i + 1];
   }
@@ -214,7 +146,7 @@ struct queue_entry *vector_pop(struct vector *vec, u32 index) {
   return entry;
 }
 
-struct queue_entry * vector_pop_front(struct vector *vec) {
+void* vector_pop_front(struct vector *vec) {
   return vector_pop(vec, 0);
 }
 
@@ -223,14 +155,14 @@ void vector_free(struct vector* vec) {
   ck_free(vec);
 }
 
-struct queue_entry* vector_get(struct vector* vec, u32 index) {
+void* vector_get(struct vector* vec, u32 index) {
   if (index >= vec->size) {
     return NULL;
   }
   return vec->data[index];
 }
 
-void vector_set(struct vector* vec, u32 index, struct queue_entry* element) {
+void vector_set(struct vector* vec, u32 index, void* element) {
   if (index < vec->size) {
     vec->data[index] = element;
   }
@@ -253,17 +185,15 @@ struct hashmap {
   struct key_value_pair** table;
 };
 
-typedef void (*hashmap_iterate_fn)(u32 key, void* value);
-
 struct hashmap* hashmap_create(u32 table_size) {
-  struct hashmap* map = ck_alloc(sizeof(struct hashmap));
+  struct hashmap* map = (struct hashmap *)ck_alloc(sizeof(struct hashmap));
   if (map == NULL) {
     printf("Memory allocation failed.\n");
     exit(EXIT_FAILURE);
   }
   map->size = 0;
   map->table_size = table_size;
-  map->table = ck_alloc(table_size * sizeof(struct key_value_pair*));
+  map->table = (struct key_value_pair**)ck_alloc(table_size * sizeof(struct key_value_pair*));
   if (map->table == NULL) {
     printf("Memory allocation failed.\n");
     exit(EXIT_FAILURE);
@@ -281,7 +211,7 @@ static u32 hashmap_fit(u32 key, u32 table_size) {
 static void hashmap_resize(struct hashmap *map) {
 
   u32 new_table_size = map->table_size * 2;
-  struct key_value_pair **new_table = ck_alloc(new_table_size * sizeof(struct key_value_pair*));
+  struct key_value_pair **new_table = (struct key_value_pair**)ck_alloc(new_table_size * sizeof(struct key_value_pair*));
   if (new_table == NULL) {
     printf("Memory allocation failed.\n");
     exit(EXIT_FAILURE);
@@ -309,7 +239,7 @@ u32 hashmap_size(struct hashmap* map) {
 // Function to insert a key-value pair into the hash map
 void hashmap_insert(struct hashmap* map, u32 key, void* value) {
   u32 index = hashmap_fit(key, map->table_size);
-  struct key_value_pair* newPair = ck_alloc(sizeof(struct key_value_pair));
+  struct key_value_pair* newPair = (struct key_value_pair*)ck_alloc(sizeof(struct key_value_pair));
   if (newPair == NULL) {
     printf("Memory allocation failed.\n");
     exit(EXIT_FAILURE);
@@ -356,16 +286,6 @@ struct key_value_pair* hashmap_get(struct hashmap* map, u32 key) {
   return NULL;
 }
 
-void hashmap_iterate(struct hashmap *map, hashmap_iterate_fn func) {
-  for (u32 i = 0; i < map->table_size; i++) {
-    struct key_value_pair *pair = map->table[i];
-    while (pair != NULL) {
-      func(pair->key, pair->value);
-      pair = pair->next;
-    }
-  }
-}
-
 void hashmap_free(struct hashmap* map) {
   for (u32 i = 0; i < map->table_size; i++) {
     struct key_value_pair* pair = map->table[i];
@@ -378,19 +298,5 @@ void hashmap_free(struct hashmap* map) {
   ck_free(map->table);
   ck_free(map);
 }
-
-enum VerticalMode {
-  M_HOR = 0,    // Horizontal mode
-  M_VER = 1,    // Vertical mode
-  M_EXP = 2,    // Exploration mode
-};
-
-struct queue_u32 {
-  u32 size;
-  u32 front;
-  u32 rear;
-  u32 data[MAX_QUEUE_U32_SIZE];
-};
-
 
 #endif //DAFL_AFL_FUZZ_H
