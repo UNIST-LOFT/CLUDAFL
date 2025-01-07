@@ -1,7 +1,10 @@
+#!/usr/bin/env python3
+import os
 from typing import Dict, List
 import sklearn.cluster as cluster
 import argparse
 import sbsv
+import pickle
 
 def read_result(filename: str) -> dict:
     parser = sbsv.parser()
@@ -35,23 +38,44 @@ def save_clusters(clusters:Dict[str,int], path:str):
         for name,cluster in clusters.items():
             f.write(f'{name} {cluster}\n')
 
+def save_sklearn_model(model, path:str):
+    with open(path,'wb') as f:
+        pickle.dump(model,f)
+
 """
     Clusters
 """
+
 def kmeans(vectors:Dict[str, List[int]], k:int=5):
-    kmeans = cluster.KMeans(n_clusters=k)
-    res=kmeans.fit_predict(list(vectors.values())) # res: array[int] of cluster ids
+    if os.path.exists(f'{args.workdir}/kmeans.pkl'):
+        # Load previous model and predict (do not fit)
+        with open(f'{args.workdir}/kmeans.pkl','rb') as f:
+            kmeans:cluster.KMeans=pickle.load(f)
+        res=kmeans.predict(list(vectors.values())) # res: array[int] of cluster ids
+    else:
+        # Generate new model, fit and predict if previous model not exist
+        kmeans = cluster.KMeans(n_clusters=k)
+        res=kmeans.fit_predict(list(vectors.values())) # res: array[int] of cluster ids
+
     return {name:cluster for name,cluster in zip(vectors.keys(),res)}
 
 def bisecting_kmeans(vectors:Dict[str, List[int]], k:int=5):
-    kmeans = cluster.BisectingKMeans(n_clusters=k)
-    res=kmeans.fit_predict(list(vectors.values())) # res: array[int] of cluster ids
+    if os.path.exists(f'{args.workdir}/bisecting-kmeans.pkl'):
+        # Load previous model and predict (do not fit)
+        with open(f'{args.workdir}/bisecting-kmeans.pkl','rb') as f:
+            kmeans:cluster.BisectingKMeans=pickle.load(f)
+        res=kmeans.predict(list(vectors.values())) # res: array[int] of cluster ids
+    else:
+        # Generate new model, fit and predict if previous model not exist
+        kmeans = cluster.BisectingKMeans(n_clusters=k)
+        res=kmeans.fit_predict(list(vectors.values())) # res: array[int] of cluster ids
     return {name:cluster for name,cluster in zip(vectors.keys(),res)}
 
 if __name__=='__main__':
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('vector_path', action='store', type=str, help='Path to the directory containing the vectors')
     arg_parser.add_argument('cluster', action='store', type=str, help='Type of cluster',choices=['kmeans','bisecting-kmeans'])
+    arg_parser.add_argument('workdir', action='store', type=str, help='Path to the working directory')
     arg_parser.add_argument('-k', '--k', action='store', type=int, help='Number of clusters', default=5)
     arg_parser.add_argument('-o', '--output', action='store', type=str, help='Path to the output file', default="")
     args = arg_parser.parse_args()
