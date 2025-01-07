@@ -1,6 +1,12 @@
 # DAFL: Directed Grey-box Fuzzing guided by Data Dependency
 <a href="https://goodtaeeun.github.io/assets/papers/sec23.pdf" target="_blank"><img src="https://goodtaeeun.github.io/assets/papers/sec23.png" align="right" width="250"></a>
 
+## Build
+```sh
+make -j 32
+cd llvm_mode && make -j 32 && cd ..
+```
+
 ## Introduction
 DAFL is a directed grey-box fuzzer implemented on top of <a href="https://lcamtuf.coredump.cx/afl/" target="_blank">American Fuzzy Lop (AFL)</a>.
 The goal of directed fuzzing is to guide the fuzzing process toward the target location and eventually expose possible bugs in the target location.
