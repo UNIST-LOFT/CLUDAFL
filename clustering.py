@@ -1,4 +1,3 @@
-import os
 from typing import Dict, List
 import sklearn.cluster as cluster
 import argparse
