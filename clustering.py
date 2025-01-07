@@ -25,7 +25,7 @@ def read_result(filename: str) -> dict:
         for v in vec:
             if v!='':
                 int_vec.append(int(v))
-        vectors[dfg]=int_vec
+        vectors[file_hash]=int_vec
     
     return vectors
 
@@ -56,7 +56,7 @@ def kmeans(vectors:Dict[str, List[int]], k:int=5):
         # Generate new model, fit and predict if previous model not exist
         kmeans = cluster.KMeans(n_clusters=k)
         res=kmeans.fit_predict(list(vectors.values())) # res: array[int] of cluster ids
-
+        save_sklearn_model(kmeans,f'{args.workdir}/kmeans.pkl')
     return {name:cluster for name,cluster in zip(vectors.keys(),res)}
 
 def bisecting_kmeans(vectors:Dict[str, List[int]], k:int=5):
@@ -69,6 +69,7 @@ def bisecting_kmeans(vectors:Dict[str, List[int]], k:int=5):
         # Generate new model, fit and predict if previous model not exist
         kmeans = cluster.BisectingKMeans(n_clusters=k)
         res=kmeans.fit_predict(list(vectors.values())) # res: array[int] of cluster ids
+        save_sklearn_model(kmeans,f'{args.workdir}/bisecting-kmeans.pkl')
     return {name:cluster for name,cluster in zip(vectors.keys(),res)}
 
 if __name__=='__main__':
