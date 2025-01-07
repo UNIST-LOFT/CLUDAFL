@@ -55,6 +55,9 @@ struct queue_entry {
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
 
+  u32 input_hash;
+  u32 dfg_hash;
+
   struct queue_entry *next;           /* Next element, if any             */
 
 };

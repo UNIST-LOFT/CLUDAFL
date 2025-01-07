@@ -2652,6 +2652,8 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   u32 use_tmout = exec_tmout;
   u8* old_sn = stage_name;
 
+  q->input_hash = hash32(use_mem, q->len, HASH_CONST);
+
   /* Be a bit more generous about timeouts when resuming sessions, or when
      trying to calibrate already-added finds. This helps avoid trouble due
      to intermittent latency. */
@@ -2690,6 +2692,8 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     write_to_testcase(use_mem, q->len);
 
     fault = run_target(argv, use_tmout);
+
+    q->dfg_hash = hash32(dfg_bits, sizeof(u32) * DFG_MAP_SIZE, HASH_CONST);
 
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
@@ -2814,9 +2818,9 @@ static void check_map_coverage(void) {
 }
 
 
-static void save_dry_run(FILE *save_file, char *fn, u64 exec_len, u8 res) {
+static void save_dry_run(FILE *save_file, char *fn, u32 hash, u32 dfg_hash, u64 exec_len, u8 res) {
 
-  fprintf(save_file, "[seed] [file %s] [res %d] [time %llu] [vec ", fn, res, exec_len);
+  fprintf(save_file, "[seed] [file %s] [hash %u] [dfg %u] [res %d] [time %llu] [vec ", fn, hash, dfg_hash, res, exec_len);
   for (u32 i = 0; i < vector_size(dfg_info_vector); i++) {
     fprintf(save_file, "%d,", dfg_bits[i]);
   }
@@ -2856,9 +2860,9 @@ static void perform_dry_run(char** argv) {
     close(fd);
 
     res = calibrate_case(argv, q, use_mem, 0, 1);
-    LOGF("[dry-run] [file %s] [res %d] [prox %d] [pre %d]\n", q->fname, res, compute_proximity_score(), q->prox_score);
+    LOGF("[dry-run] [file %s] [hash %u] [dfg %u] [res %d] [prox %d] [pre %d]\n", q->fname, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
 
-    save_dry_run(save_file, q->fname, q->exec_us, res);
+    save_dry_run(save_file, q->fname, q->input_hash, q->dfg_hash, q->exec_us, res);
 
     ck_free(use_mem);
 
