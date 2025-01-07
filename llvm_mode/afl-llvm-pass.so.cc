@@ -98,10 +98,13 @@ void initDFGNodeMap(char* dfg_file) {
   while (std::getline(stream, line)) {
     std::size_t space_idx = line.find(" ");
     std::string score_str = line.substr(0, space_idx);
-    std::string targ_line = line.substr(space_idx + 1, std::string::npos);
+    std::size_t space_idx2 = line.find(" ", space_idx + 1);
+    std::string path_cnt_str = line.substr(space_idx + 1, space_idx2);
+    std::string targ_line = line.substr(space_idx2 + 1, std::string::npos);
     int score = stoi(score_str);
+    unsigned long long path_cnt = stoull(path_cnt_str);
     dfg_node_map[targ_line] = std::make_pair(idx++, (unsigned int) score);
-    if (idx >= DFG_MAP_SIZE) {
+    if (idx >= DFG_MAP_SIZE - 1) {
       std::cout << "Input DFG is too large (check DFG_MAP_SIZE)" << std::endl;
       exit(1);
     }

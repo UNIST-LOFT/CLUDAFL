@@ -2814,6 +2814,16 @@ static void check_map_coverage(void) {
 }
 
 
+static void save_dry_run(FILE *save_file, char *fn, u64 exec_len, u8 res) {
+
+  fprintf(save_file, "[seed] [file %s] [res %d] [time %llu] [vec ", fn, res, exec_len);
+  for (u32 i = 0; i < vector_size(dfg_info_vector); i++) {
+    fprintf(save_file, "%d,", dfg_bits[i]);
+  }
+  fprintf(save_file, "]\n");
+
+}
+
 /* Perform dry run of all test cases to confirm that the app is working as
    expected. This is done only for the initial inputs, and only once. */
 
@@ -2822,6 +2832,8 @@ static void perform_dry_run(char** argv) {
   struct queue_entry* q = queue;
   u32 cal_failures = 0;
   u8* skip_crashes = getenv("AFL_SKIP_CRASHES");
+  u8* save_filename = alloc_printf("%s/dry_run_results.sbsv", out_dir);
+  FILE *save_file = fopen(save_filename, "w");
 
   while (q) {
 
@@ -2844,6 +2856,10 @@ static void perform_dry_run(char** argv) {
     close(fd);
 
     res = calibrate_case(argv, q, use_mem, 0, 1);
+    LOGF("[dry-run] [file %s] [res %d] [prox %d] [pre %d]\n", q->fname, res, compute_proximity_score(), q->prox_score);
+
+    save_dry_run(save_file, q->fname, q->exec_us, res);
+
     ck_free(use_mem);
 
     if (stop_soon) return;
@@ -7907,6 +7923,7 @@ int main(int argc, char** argv) {
   u8  mem_limit_given = 0;
   u8  exit_1 = !!getenv("AFL_BENCH_JUST_ONE");
   char** use_argv;
+  u8 run_only_dry_run = 0;
 
   struct timeval tv;
   struct timezone tz;
@@ -7918,7 +7935,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:p:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:p:v")) > 0)
 
     switch (opt) {
 
@@ -8114,6 +8131,10 @@ int main(int argc, char** argv) {
         
         }
         break;
+      
+      case 'v':
+        run_only_dry_run = 1;
+        break;
 
       default:
 
@@ -8203,6 +8224,11 @@ int main(int argc, char** argv) {
     use_argv = argv + optind;
 
   perform_dry_run(use_argv);
+
+  if (run_only_dry_run) {
+    OKF("Dry run finished, exiting.");
+    exit(0);
+  }
 
   cull_queue();
 
