@@ -2,13 +2,26 @@ import os
 from typing import Dict, List
 import sklearn.cluster as cluster
 import argparse
+import sbsv
 
-def parse_vectors(path:str):
-    vectors:Dict[str, List[int]]=dict()
-    for file in os.listdir(path):
-        if not os.path.isdir(f'{path}/{file}'):
-            with open(f'{path}/{file}','r') as f:
-                vectors[file]=list(map(int,f.read().strip().split(' '))) # TODO: Change to proper seperator
+def read_result(filename: str) -> dict:
+    parser = sbsv.parser()
+    parser.add_schema("[seed] [file: str] [res: int] [time: int] [vec: str]")
+    with open(filename, 'r') as f:
+        result=parser.load(f)
+    
+    vectors=dict()
+    for r in result['seed']:
+        file = r["file"]
+        res = r["res"]
+        time = r["time"]
+        vec_str = r["vec"]
+        vec = vec_str.strip().split(",")
+        int_vec=[]
+        for v in vec:
+            if v!='':
+                int_vec.append(int(v))
+        vectors[file]=int_vec
     
     return vectors
 
@@ -32,13 +45,14 @@ def bisecting_kmeans(vectors:Dict[str, List[int]], k:int=5):
 
 if __name__=='__main__':
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('vector-path', action='store', type=str, help='Path to the directory containing the vectors')
-    arg_parser.add_argument('output-path', action='store', type=str, help='Path to the output file')
+    arg_parser.add_argument('vector_path', action='store', type=str, help='Path to the directory containing the vectors')
+    arg_parser.add_argument('output_path', action='store', type=str, help='Path to the output file')
     arg_parser.add_argument('cluster', action='store', type=str, help='Type of cluster',choices=['kmeans','bisecting-kmeans'])
     arg_parser.add_argument('--k', action='store', type=int, help='Number of clusters', default=5)
     args = arg_parser.parse_args()
 
-    vectors=parse_vectors(args.vector_path)
+    vectors=read_result(args.vector_path)
+
     if args.cluster=='kmeans':
         clusters=kmeans(vectors,args.k)
         save_clusters(clusters,args.output_path)
