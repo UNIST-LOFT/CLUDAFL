@@ -2702,8 +2702,12 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     fault = run_target(argv, use_tmout);
 
-    q->dfg_hash = hash32(dfg_bits, sizeof(u32) * DFG_MAP_SIZE, HASH_CONST);
-
+    if (q->dfg_hash == 0) {
+      q->dfg_hash = hash32(dfg_bits, sizeof(u32) * DFG_MAP_SIZE, HASH_CONST);
+      q->dfg_arr = array_create(vector_size(dfg_info_vector));
+      array_copy(q->dfg_arr, dfg_bits, vector_size(dfg_info_vector));
+    }
+    
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
 
@@ -2827,11 +2831,15 @@ static void check_map_coverage(void) {
 }
 
 
-static void save_dry_run(FILE *save_file, char *fn, u32 hash, u32 dfg_hash, u64 exec_len, u8 res) {
+static void save_dry_run(FILE *save_file, struct queue_entry *q, u64 exec_len, u8 res) {
+
+  char *fn = q->fname;
+  u32 hash = q->input_hash;
+  u32 dfg_hash = q->dfg_hash;
 
   fprintf(save_file, "[seed] [file %s] [hash %u] [dfg %u] [res %d] [time %llu] [vec ", fn, hash, dfg_hash, res, exec_len);
-  for (u32 i = 0; i < vector_size(dfg_info_vector); i++) {
-    fprintf(save_file, "%d,", dfg_bits[i]);
+  for (u32 i = 0; i < array_size(q->dfg_arr); i++) {
+    fprintf(save_file, "%u,", array_get(q->dfg_arr, i));
   }
   fprintf(save_file, "]\n");
 
@@ -2871,7 +2879,7 @@ static void perform_dry_run(char** argv) {
     res = calibrate_case(argv, q, use_mem, 0, 1);
     LOGF("[dry-run] [file %s] [hash %u] [dfg %u] [res %d] [prox %d] [pre %d]\n", q->fname, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
 
-    save_dry_run(save_file, q->fname, q->input_hash, q->dfg_hash, q->exec_us, res);
+    save_dry_run(save_file, q, q->exec_us, res);
 
     ck_free(use_mem);
 
