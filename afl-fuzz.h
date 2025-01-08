@@ -306,6 +306,7 @@ void hashmap_free(struct hashmap* map) {
 struct cluster {
   u32 id;
   struct vector *children;  // vector<struct queue_entry*>
+  u32 cur_index;
 };
 
 struct cluster_node {
@@ -327,6 +328,7 @@ struct cluster *cluster_create(u32 id) {
   }
   new_cluster->id = id;
   new_cluster->children = vector_create();
+  new_cluster->cur_index = 0;
   return new_cluster;
 }
 
@@ -361,6 +363,16 @@ void cluster_free(struct cluster *cluster) {
   if (!cluster) return;
   vector_free(cluster->children);
   ck_free(cluster);
+}
+
+/**
+ * Select random cluster.
+ */
+struct cluster *select_cluster_random(struct cluster_manager *manager) {
+  if (!manager) return NULL;
+  u32 random_index = rand() % manager->root_cluster_map->table_size;
+  struct key_value_pair *pair = manager->root_cluster_map->table[random_index];
+  return pair ? (struct cluster *)pair->value : NULL;
 }
 
 // Cluster Node functions

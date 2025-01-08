@@ -285,6 +285,8 @@ static struct vector *dfg_info_vector = NULL; // vector<struct dfg_node_info *> 
 
 static struct vector *queue_entry_id_vec = NULL; // vector<queue_entry *>, entry_id is index
 static struct hashmap *queue_input_hash_map = NULL; // map<input_hash, queue_entry *> for queue entry
+static struct cluster_manager *cluster_manager = NULL; // cluster manager
+static u8 *select_strategy = "dafl"; // strategy for selecting input. (dafl, random, random_cluster, dafl_cluster, default: dafl)
 
 /* Fuzzing stages */
 
@@ -5101,6 +5103,76 @@ static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
 
 }
 
+/**
+ * Select an input with original DAFL
+ */
+struct queue_entry *select_next_dafl(void) {
+  if (first_unhandled) { // This is set only when a new item was added.
+    queue_cur = first_unhandled;
+    first_unhandled = NULL;
+  } else { // Proceed to the next unhandled item in the queue.
+    while (queue_cur && queue_cur->handled_in_cycle)
+      queue_cur = queue_cur->next;
+  }
+  return queue_cur;
+}
+
+/**
+ * Select an input randomly
+ */
+struct queue_entry *select_next_random(void) {
+  queue_cur = queue;
+  u32 random_index = rand() % queue_last->depth;
+  for (u32 i = 0; i < random_index; i++) {
+    queue_cur = queue_cur->next;
+  }
+  return queue_cur;
+}
+
+/**
+ * Select an input randomly with cluster
+ */
+struct queue_entry *select_next_cluster_random(void) {
+  struct cluster *clu=select_cluster_random(cluster_manager);
+  queue_cur=select_random_entry_from_cluster(clu);
+  return queue_cur;
+}
+
+static u32 cur_cluster_index=0;
+/**
+ * Select a cluster and input with original DAFL
+ */
+struct queue_entry *select_next_cluster_dafl(void) {
+  // Select next cluster
+  struct cluster *clu;
+  if (cur_cluster_index>=cluster_manager->root_cluster_map->size) {
+    cur_cluster_index=0;
+    clu=(struct cluster*)cluster_manager->root_cluster_map->table[0]->value;
+  }
+  else {
+    clu=(struct cluster*)cluster_manager->root_cluster_map->table[cur_cluster_index++]->value;
+  }
+
+  // Select next input
+  queue_cur=vector_get(clu->children,clu->cur_index++);
+  return queue_cur;
+}
+
+/**
+ * Select an input with various strategies
+ */
+struct queue_entry *select_next(void) {
+  if (strcmp(select_strategy, "dafl") == 0) {
+    return select_next_dafl();
+  } else if (strcmp(select_strategy, "random") == 0) {
+    return select_next_random();
+  } else if (strcmp(select_strategy, "cluster_random") == 0) {
+    return select_next_cluster_random();
+  } else if (strcmp(select_strategy, "cluster_dafl") == 0) {
+    return select_next_cluster_dafl();
+  }
+  return NULL;
+}
 
 /* Take the current entry from the queue, fuzz it for a while. This
    function is a tad too long... returns 0 if fuzzed successfully, 1 if
@@ -8348,13 +8420,14 @@ int main(int argc, char** argv) {
 
     if (stop_soon) break;
 
-    if (first_unhandled) { // This is set only when a new item was added.
-      queue_cur = first_unhandled;
-      first_unhandled = NULL;
-    } else { // Proceed to the next unhandled item in the queue.
-      while (queue_cur && queue_cur->handled_in_cycle)
-        queue_cur = queue_cur->next;
-    }
+    // if (first_unhandled) { // This is set only when a new item was added.
+    //   queue_cur = first_unhandled;
+    //   first_unhandled = NULL;
+    // } else { // Proceed to the next unhandled item in the queue.
+    //   while (queue_cur && queue_cur->handled_in_cycle)
+    //     queue_cur = queue_cur->next;
+    // }
+    queue_cur=select_next();
   }
 
   if (queue_cur) show_stats();
