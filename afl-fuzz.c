@@ -3322,13 +3322,6 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     prox_score = compute_proximity_score();
 
-    u8* save_filename = alloc_printf("%s/results.sbsv", out_dir);
-    FILE *save_file = fopen(save_filename, "w");
-    save_dry_run(save_file, queue_cur, queue_cur->exec_us, fault);
-    fclose(save_file);
-
-    predict_clusters(save_filename);
-
 #ifndef SIMPLE_FILES
 
     fn = alloc_printf("%s/queue/id:%06u,%llu,%s", out_dir, queued_paths,
@@ -3353,6 +3346,13 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
        successful. */
 
     res = calibrate_case(argv, queue_last, mem, queue_cycle - 1, 0);
+    // CLUDAFL: Save run results - this should be done after calibration
+    u8* save_filename = alloc_printf("%s/results.sbsv", out_dir);
+    FILE *save_file = fopen(save_filename, "w");
+    save_dry_run(save_file, queue_cur, queue_cur->exec_us, fault);
+    fclose(save_file);
+
+    predict_clusters(save_filename);
 
     if (res == FAULT_ERROR)
       FATAL("Unable to execute target application");
@@ -8053,6 +8053,7 @@ void init_clusters() {
   if (cludafl_dir == NULL) {
     FATAL("CLUDAFL environment variable not set");
   }
+  cluster_manager = cluster_manager_create();
   char *cluster_cmd = alloc_printf("python3 %s/clustering.py %s/dry_run_results.sbsv kmeans %s", cludafl_dir, out_dir, out_dir);
   FILE *cluster_file = popen(cluster_cmd, "r");
   if (cluster_file == NULL) {
@@ -8069,11 +8070,18 @@ void init_clusters() {
     }
     struct queue_entry *q = kvp->value;
     // Add q to cluster
-    cluster_add_child(cluster_manager_get_cluster(cluster_manager,cluster_id),q);
+    cluster_add_child(cluster_manager_get_or_add_cluster(cluster_manager, cluster_id), q);
   }
   pclose(cluster_file);
   free(cluster_cmd);
-
+  // Sort clusters by cluster_id
+  struct vector *new_vector = vector_create();
+  for (u32 i = 0; i < vector_size(cluster_manager->clusters); i++) {
+    struct cluster *c = cluster_manager_get_or_add_cluster(cluster_manager, i);
+    push_back(new_vector, c);
+  }
+  vector_free(cluster_manager->clusters);
+  cluster_manager->clusters = new_vector;
 }
 
 #ifndef AFL_LIB

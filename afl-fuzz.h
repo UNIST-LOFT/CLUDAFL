@@ -618,7 +618,7 @@ void cluster_manager_add_cluster(struct cluster_manager *manager, struct cluster
 //   hashmap_remove(manager->root_cluster_map, cluster_id);
 // }
 
-struct cluster *cluster_manager_get_cluster(struct cluster_manager *manager, u32 cluster_id) {
+struct cluster *cluster_manager_get_or_add_cluster(struct cluster_manager *manager, u32 cluster_id) {
   if (!manager) return NULL;
   for (u32 i = 0; i < vector_size(manager->clusters); i++) {
     struct cluster *clu = (struct cluster *)vector_get(manager->clusters, i);
@@ -627,6 +627,11 @@ struct cluster *cluster_manager_get_cluster(struct cluster_manager *manager, u32
     }
   }
   return NULL;
+}
+
+struct cluster *cluster_manager_get_cluster(struct cluster_manager *manager, u32 index) {
+  if (!manager) return NULL;
+  return (struct cluster *)vector_get(manager->clusters, index);
 }
 
 void cluster_manager_free(struct cluster_manager *manager) {
