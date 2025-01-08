@@ -58,6 +58,17 @@ u32 array_get(struct array *arr, u32 index) {
   return arr->data[index];
 }
 
+void array_copy(struct array *dst, u32 *src, u32 size) {
+  if (dst->size < size) {
+    FATAL("Destination array is too small: %u < %u", dst->size, size);
+  }
+  memcpy(dst->data, src, size * sizeof(u32));
+}
+
+u32 array_size(struct array *arr) {
+  return arr->size;
+}
+
 struct queue_entry {
 
   u8* fname;                          /* File name for the test case      */
@@ -89,7 +100,7 @@ struct queue_entry {
   // CLUDAFL
   u32 input_hash;
   u32 dfg_hash;
-  struct array *dfg_vec;
+  struct array *dfg_arr;
 
   struct queue_entry *next;           /* Next element, if any             */
 };
