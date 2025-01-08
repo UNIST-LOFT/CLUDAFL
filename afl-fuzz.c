@@ -3296,7 +3296,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     u8* save_filename = alloc_printf("%s/dry_run_results.sbsv", out_dir);
     FILE *save_file = fopen(save_filename, "w");
-    save_dry_run(save_file, queue_cur->fname, queue_cur->input_hash, queue_cur->dfg_hash, queue_cur->exec_us, res);
+    save_dry_run(save_file, queue_cur, queue_cur->exec_us, fault);
     fclose(save_file);
 
 #ifndef SIMPLE_FILES
