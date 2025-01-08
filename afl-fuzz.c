@@ -8046,7 +8046,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:p:v")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:p:vs:")) > 0)
 
     switch (opt) {
 
@@ -8245,6 +8245,13 @@ int main(int argc, char** argv) {
       
       case 'v':
         run_only_dry_run = 1;
+        break;
+
+      case 's':
+        if (strcmp(optarg, "dafl")!=0 && strcmp(optarg, "random")!=0 && strcmp(optarg, "dafl_cluster")!=0 &&
+                strcmp(optarg, "random_cluster")!=0)
+            FATAL("Unsupported strategy, it should be 'dafl', 'random', 'dafl_cluster' or 'random_cluster'");
+        select_strategy = optarg;
         break;
 
       default:
