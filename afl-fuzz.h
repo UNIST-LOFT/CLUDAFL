@@ -90,7 +90,7 @@ struct list* list_create(void) {
   return list;
 }
 
-void list_insert_back(struct list *list, void *data) {
+struct list_entry* list_insert_back(struct list *list, void *data) {
   struct list_entry *entry = list_entry_create(data);
   if (list->size == 0) {
     list->head = entry;
@@ -101,9 +101,10 @@ void list_insert_back(struct list *list, void *data) {
     list->tail = entry;
   }
   list->size++;
+  return entry;
 }
 
-void list_insert_front(struct list *list, void *data) {
+struct list_entry* list_insert_front(struct list *list, void *data) {
   struct list_entry *entry = list_entry_create(data);
   if (list->size == 0) {
     list->head = entry;
@@ -114,13 +115,19 @@ void list_insert_front(struct list *list, void *data) {
     list->head = entry;
   }
   list->size++;
+  return entry;
 }
 
-void list_insert(struct list *list, struct list_entry *entry_prev, void *data) {
-  struct list_entry *entry = list_entry_create(data);
-  if (entry_prev == NULL) {
-    list_insert_front(list, data);
+struct list_entry* list_insert(struct list *list, struct list_entry *entry_prev, void *data) {
+  struct list_entry *entry = NULL;
+  if (entry_prev == NULL) { // Insert at the front
+    entry = list_insert_front(list, data);
   } else {
+    entry = list_entry_create(data);
+    // Update tail if entry_prev is the tail
+    if (entry_prev == list->tail) {
+      list->tail = entry;
+    }
     entry->next = entry_prev->next;
     entry->prev = entry_prev;
     entry_prev->next = entry;
@@ -129,6 +136,7 @@ void list_insert(struct list *list, struct list_entry *entry_prev, void *data) {
     }
     list->size++;
   }
+  return entry;
 }
 
 void list_remove(struct list *list, struct list_entry *entry) {
@@ -421,6 +429,8 @@ struct cluster {
   u32 id;
   // struct vector *children;  // vector<struct queue_entry*>
   struct list *cluster_nodes; // list<struct cluster_node*>
+  struct list_entry *cur;
+  struct list_entry *first_unhandled;
 };
 
 struct cluster_node {
@@ -442,6 +452,8 @@ struct cluster *cluster_create(u32 id) {
   }
   new_cluster->id = id;
   new_cluster->cluster_nodes = list_create();
+  new_cluster->cur = NULL;
+  new_cluster->first_unhandled = NULL;
   return new_cluster;
 }
 
@@ -455,6 +467,9 @@ u32 cluster_add_child(struct cluster *cluster, struct queue_entry *entry) {
   if (!cluster || !entry) return 0; 
   // TODO: sorted insert
   list_insert_back(cluster->cluster_nodes, entry);
+  if (!cluster->first_unhandled) {
+    cluster->first_unhandled = cluster->cur;
+  }
   return 1;
 }
 
@@ -476,6 +491,16 @@ void cluster_free(struct cluster *cluster) {
   if (!cluster) return;
   list_free(cluster->cluster_nodes);
   ck_free(cluster);
+}
+
+/**
+ * Select random cluster.
+ */
+struct cluster *select_cluster_random(struct cluster_manager *manager) {
+  if (!manager) return NULL;
+  u32 random_index = rand() % manager->root_cluster_map->table_size;
+  struct key_value_pair *pair = manager->root_cluster_map->table[random_index];
+  return pair ? (struct cluster *)pair->value : NULL;
 }
 
 // Cluster Node functions
