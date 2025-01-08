@@ -462,14 +462,27 @@ u32 cluster_size(struct cluster *cluster) {
   return list_size(cluster->cluster_nodes);
 }
 
-//Adds a queue_entry to the cluster's children vector.
+//Adds a queue_entry to the cluster in a sorted manner.
 u32 cluster_add_child(struct cluster *cluster, struct queue_entry *entry) {
   if (!cluster || !entry) return 0; 
-  // TODO: sorted insert
-  list_insert_back(cluster->cluster_nodes, entry);
-  if (!cluster->first_unhandled) {
-    cluster->first_unhandled = cluster->cur;
+  // sorted insertion: larger ones go to the front
+  struct list_entry *entry_node = list_get_head(cluster->cluster_nodes);
+  struct list_entry *last_added_entry = NULL;
+  cluster->first_unhandled = NULL;
+  while (entry_node) {
+    struct queue_entry *cur_entry = (struct queue_entry*)entry_node->data;
+    if (!cluster->first_unhandled && !cur_entry->handled_in_cycle)
+      cluster->first_unhandled = entry_node;
+    if (cur_entry->prox_score < entry->prox_score) {
+      last_added_entry = list_insert(cluster->cluster_nodes, entry_node->prev, entry);
+      break;
+    }
+    entry_node = entry_node->next;
   }
+  if (!last_added_entry)
+    last_added_entry = list_insert_back(cluster->cluster_nodes, entry);
+  if (!cluster->first_unhandled)
+    cluster->first_unhandled = last_added_entry;
   return 1;
 }
 
