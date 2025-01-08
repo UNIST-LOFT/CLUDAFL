@@ -2842,6 +2842,7 @@ static void save_dry_run(FILE *save_file, struct queue_entry *q, u64 exec_len, u
     fprintf(save_file, "%u,", array_get(q->dfg_arr, i));
   }
   fprintf(save_file, "]\n");
+  fflush(save_file);
 
 }
 
@@ -3035,6 +3036,9 @@ static void perform_dry_run(char** argv) {
     q = q->next;
 
   }
+
+  fclose(save_file);
+  ck_free(save_filename);
 
   if (cal_failures) {
 
@@ -3275,7 +3279,7 @@ void predict_clusters(u8 *out_file) {
   if (cludafl_dir == NULL) {
     FATAL("CLUDAFL environment variable not set");
   }
-  char *cluster_cmd = alloc_printf("python3 %s/clustering.py %s/ kmeans %s", cludafl_dir, out_file, out_dir);
+  char *cluster_cmd = alloc_printf("python3 %s/clustering.py %s kmeans %s", cludafl_dir, out_file, out_dir);
   FILE *cluster_file = popen(cluster_cmd, "r");
   if (cluster_file == NULL) {
     FATAL("Failed to open cluster file");
@@ -3294,7 +3298,7 @@ void predict_clusters(u8 *out_file) {
     cluster_add_child(cluster_manager_get_cluster(cluster_manager,cluster_id),q);
   }
   pclose(cluster_file);
-  free(cluster_cmd);
+  ck_free(cluster_cmd);
 
 }
 
@@ -3353,6 +3357,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     fclose(save_file);
 
     predict_clusters(save_filename);
+    ck_free(save_filename);
 
     if (res == FAULT_ERROR)
       FATAL("Unable to execute target application");
@@ -8073,7 +8078,7 @@ void init_clusters() {
     cluster_add_child(cluster_manager_get_or_add_cluster(cluster_manager, cluster_id), q);
   }
   pclose(cluster_file);
-  free(cluster_cmd);
+  ck_free(cluster_cmd);
   // Sort clusters by cluster_id
   struct vector *new_vector = vector_create();
   for (u32 i = 0; i < vector_size(cluster_manager->clusters); i++) {
