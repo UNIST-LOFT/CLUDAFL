@@ -7,6 +7,15 @@ make -j 32
 cd llvm_mode && make -j 32 && cd ..
 ```
 
+## Usage
+```sh
+export AFL_NO_UI=1
+export CLUDAFL=/path/to/CLUDAFL
+$CLUDAFL/afl-fuzz -i in -o out -m none -d -p /path/to/sparrow-out/bug/slice_dfg.txt -- target-program args @@
+```
+You should set environment variable `CLUDAFL` for clustering. Internally, `$CLUDAFL/afl-fuzz` calls
+`python3 $CLUDAFL/clustering.py out/dry_run_results.sbsv kmeans out` to get clustering results.
+
 ## Introduction
 DAFL is a directed grey-box fuzzer implemented on top of <a href="https://lcamtuf.coredump.cx/afl/" target="_blank">American Fuzzy Lop (AFL)</a>.
 The goal of directed fuzzing is to guide the fuzzing process toward the target location and eventually expose possible bugs in the target location.
