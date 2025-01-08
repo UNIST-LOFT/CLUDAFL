@@ -3291,6 +3291,7 @@ void predict_clusters(u8 *out_file) {
     }
     struct queue_entry *q = kvp->value;
     // Add q to cluster
+    cluster_add_child(cluster_manager_get_cluster(cluster_manager,cluster_id),q);
   }
   pclose(cluster_file);
   free(cluster_cmd);
@@ -8068,6 +8069,7 @@ void init_clusters() {
     }
     struct queue_entry *q = kvp->value;
     // Add q to cluster
+    cluster_add_child(cluster_manager_get_cluster(cluster_manager,cluster_id),q);
   }
   pclose(cluster_file);
   free(cluster_cmd);
