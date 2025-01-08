@@ -3269,6 +3269,33 @@ static void write_crash_readme(void) {
 
 }
 
+void predict_clusters(u8 *out_file) {
+
+  char *cludafl_dir = getenv("CLUDAFL");
+  if (cludafl_dir == NULL) {
+    FATAL("CLUDAFL environment variable not set");
+  }
+  char *cluster_cmd = alloc_printf("python3 %s/clustering.py %s/ kmeans %s", cludafl_dir, out_file, out_dir);
+  FILE *cluster_file = popen(cluster_cmd, "r");
+  if (cluster_file == NULL) {
+    FATAL("Failed to open cluster file");
+  }
+  char buffer[1024];
+  while (fgets(buffer, 1024, cluster_file) != NULL) {
+    // Read cluster info
+    u32 file_hash, cluster_id;
+    sscanf(buffer, "%u %u", &file_hash, &cluster_id);
+    struct key_value_pair *kvp = hashmap_get(queue_input_hash_map, file_hash);
+    if (kvp == NULL) {
+      FATAL("Failed to find file hash in hashmap");
+    }
+    struct queue_entry *q = kvp->value;
+    // Add q to cluster
+  }
+  pclose(cluster_file);
+  free(cluster_cmd);
+
+}
 
 /* Check if the result of an execve() during routine fuzzing is interesting,
    save or queue the input test case for further analysis if so. Returns 1 if
@@ -3294,10 +3321,12 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     prox_score = compute_proximity_score();
 
-    u8* save_filename = alloc_printf("%s/dry_run_results.sbsv", out_dir);
+    u8* save_filename = alloc_printf("%s/results.sbsv", out_dir);
     FILE *save_file = fopen(save_filename, "w");
     save_dry_run(save_file, queue_cur, queue_cur->exec_us, fault);
     fclose(save_file);
+
+    predict_clusters(save_filename);
 
 #ifndef SIMPLE_FILES
 
