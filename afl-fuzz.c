@@ -3274,7 +3274,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  keeping = 0, res;
   u64 prox_score;
 
-  if (fault == crash_mode) {
+  if (check_valid_res(fault)) {
 
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
