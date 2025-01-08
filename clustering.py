@@ -2,6 +2,7 @@
 import os
 from typing import Dict, List
 import sklearn.cluster as cluster
+import sklearn.metrics as metrics
 import argparse
 import sbsv
 import pickle
@@ -46,7 +47,22 @@ def save_sklearn_model(model, path:str):
     Clusters
 """
 
-def kmeans(vectors:Dict[str, List[int]], k:int=5):
+def kmeans(vectors:Dict[str, List[int]], k:int=-1):
+    """
+        Create new k-means cluster model or load previous model and predict.
+        If previous model not exist, generate new model, fit and predict.
+        Otherwise, load previous model and predict without fitting.
+        
+        If `k` is not specified, select proper `k` with silhouette score from [2,10].
+        Otherwise, use specified `k`.
+        No affect if previous model exists.
+
+        Args:
+            vectors: Dict[str, List[int]] - Dictionary of vectors. Key: file_hash, Value: vector
+            k: int - Number of clusters, default: -1
+        Returns:
+            Dict[str,int] - Dictionary of clusters. Key: file_hash, Value: cluster id
+    """
     if os.path.exists(f'{args.workdir}/kmeans.pkl'):
         # Load previous model and predict (do not fit)
         with open(f'{args.workdir}/kmeans.pkl','rb') as f:
@@ -54,12 +70,47 @@ def kmeans(vectors:Dict[str, List[int]], k:int=5):
         res=kmeans.predict(list(vectors.values())) # res: array[int] of cluster ids
     else:
         # Generate new model, fit and predict if previous model not exist
-        kmeans = cluster.KMeans(n_clusters=k)
+        if k<2:
+            # Select proper k with silhouette score if k is not specified
+            K_RANGE=[2,3,4,5,6,7,8,9,10]
+            best_k=2
+            best_score=-1.
+
+            for k in K_RANGE:
+                kmeans = cluster.KMeans(n_clusters=k)
+                res=kmeans.fit_predict(list(vectors.values()))
+                score=metrics.silhouette_score(list(vectors.values()),res)
+                if score>best_score:
+                    best_score=score
+                    best_k=k
+            
+            kmeans = cluster.KMeans(n_clusters=best_k)
+        else:
+            # Use specified k
+            kmeans = cluster.KMeans(n_clusters=k)
+
         res=kmeans.fit_predict(list(vectors.values())) # res: array[int] of cluster ids
         save_sklearn_model(kmeans,f'{args.workdir}/kmeans.pkl')
     return {name:cluster for name,cluster in zip(vectors.keys(),res)}
 
-def bisecting_kmeans(vectors:Dict[str, List[int]], k:int=5):
+def bisecting_kmeans(vectors:Dict[str, List[int]], k:int=-1):
+    """
+        Create new bisecting k-means cluster model or load previous model and predict.
+        Bisecting k-means is a hierarchical clustering algorithm based on k-means model.
+        If previous model not exist, generate new model, fit and predict.
+        Otherwise, load previous model and predict without fitting.
+        
+        If `k` is not specified, select proper `k` with silhouette score from [2,10].
+        Otherwise, use specified `k`.
+        No affect if previous model exists.
+
+        Args:
+            vectors: Dict[str, List[int]] - Dictionary of vectors. Key: file_hash, Value: vector
+            k: int - Number of clusters, default: -1
+        Returns:
+            Dict[str,int] - Dictionary of clusters. Key: file_hash, Value: cluster id
+    """
+    # TODO: Add hierarchy
     if os.path.exists(f'{args.workdir}/bisecting-kmeans.pkl'):
         # Load previous model and predict (do not fit)
         with open(f'{args.workdir}/bisecting-kmeans.pkl','rb') as f:
@@ -67,7 +118,24 @@ def bisecting_kmeans(vectors:Dict[str, List[int]], k:int=5):
         res=kmeans.predict(list(vectors.values())) # res: array[int] of cluster ids
     else:
         # Generate new model, fit and predict if previous model not exist
-        kmeans = cluster.BisectingKMeans(n_clusters=k)
+        if k<2:
+            # Select proper k with silhouette score if k is not specified
+            K_RANGE=[2,3,4,5,6,7,8,9,10]
+            best_k=2
+            best_score=-1.
+
+            for k in K_RANGE:
+                kmeans = cluster.BisectingKMeans(n_clusters=k)
+                res=kmeans.fit_predict(list(vectors.values()))
+                score=metrics.silhouette_score(list(vectors.values()),res)
+                if score>best_score:
+                    best_score=score
+                    best_k=k
+            
+            kmeans = cluster.BisectingKMeans(n_clusters=best_k)
+        else:
+            # Use specified k
+            kmeans = cluster.BisectingKMeans(n_clusters=k)
         res=kmeans.fit_predict(list(vectors.values())) # res: array[int] of cluster ids
         save_sklearn_model(kmeans,f'{args.workdir}/bisecting-kmeans.pkl')
     return {name:cluster for name,cluster in zip(vectors.keys(),res)}
@@ -77,7 +145,7 @@ if __name__=='__main__':
     arg_parser.add_argument('vector_path', action='store', type=str, help='Path to the directory containing the vectors')
     arg_parser.add_argument('cluster', action='store', type=str, help='Type of cluster',choices=['kmeans','bisecting-kmeans'])
     arg_parser.add_argument('workdir', action='store', type=str, help='Path to the working directory')
-    arg_parser.add_argument('-k', '--k', action='store', type=int, help='Number of clusters', default=5)
+    arg_parser.add_argument('-k', '--k', action='store', type=int, help='Number of clusters', default=-1)
     arg_parser.add_argument('-o', '--output', action='store', type=str, help='Path to the output file', default="")
     args = arg_parser.parse_args()
 
