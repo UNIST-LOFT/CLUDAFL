@@ -281,8 +281,10 @@ static s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
 
 /* CLUDAFL */
 static FILE* unique_dafl_log_file = NULL; // log file
-static struct vector *dfg_info_vector = NULL; // vector<struct proximity_score *> for dfg info
+static struct vector *dfg_info_vector = NULL; // vector<struct dfg_node_info *> for dfg info
 
+static struct vector *queue_entry_id_vec = NULL; // vector<queue_entry *>, entry_id is index
+static struct hashmap *queue_input_hash_map = NULL; // map<input_hash, queue_entry *> for queue entry
 
 /* Fuzzing stages */
 
@@ -837,13 +839,14 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
+  push_back(queue_entry_id_vec, q);
 
   q->fname        = fname;
   q->len          = len;
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
   q->prox_score   = prox_score;
-  q->entry_id     = queued_paths;
+  q->entry_id     = vector_size(queue_entry_id_vec) - 1;
 
   if (q->depth > max_depth) max_depth = q->depth;
 
@@ -2653,6 +2656,10 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   u8* old_sn = stage_name;
 
   q->input_hash = hash32(use_mem, q->len, HASH_CONST);
+  struct key_value_pair *kv = hashmap_get(queue_input_hash_map, q->input_hash);
+  if (!kv) {
+    hashmap_insert(queue_input_hash_map, q->input_hash, q);
+  }
 
   /* Be a bit more generous about timeouts when resuming sessions, or when
      trying to calibrate already-added finds. This helps avoid trouble due
@@ -7914,6 +7921,34 @@ void init_dfg(char *dfg_filename) {
   fclose(file);
 }
 
+void init_clusters() {
+
+  char *cludafl_dir = getenv("CLUDAFL");
+  if (cludafl_dir == NULL) {
+    FATAL("CLUDAFL environment variable not set");
+  }
+  char *cluster_cmd = alloc_printf("python3 %s/clustering.py %s/dry_run_results.sbsv kmeans %s", cludafl_dir, out_dir, out_dir);
+  FILE *cluster_file = popen(cluster_cmd, "r");
+  if (cluster_file == NULL) {
+    FATAL("Failed to open cluster file");
+  }
+  char buffer[1024];
+  while (fgets(buffer, 1024, cluster_file) != NULL) {
+    // Read cluster info
+    u32 file_hash, cluster_id;
+    sscanf(buffer, "%u %u", &file_hash, &cluster_id);
+    struct key_value_pair *kvp = hashmap_get(queue_input_hash_map, file_hash);
+    if (kvp == NULL) {
+      FATAL("Failed to find file hash in hashmap");
+    }
+    struct queue_entry *q = kvp->value;
+    // Add q to cluster
+  }
+  pclose(cluster_file);
+  free(cluster_cmd);
+
+}
+
 #ifndef AFL_LIB
 
 /* Main entry point */
@@ -8151,6 +8186,9 @@ int main(int argc, char** argv) {
   setup_signal_handlers();
   check_asan_opts();
 
+  queue_entry_id_vec = vector_create();
+  queue_input_hash_map = hashmap_create(1024);
+
   if (sync_id) fix_up_sync();
 
   if (!strcmp(in_dir, out_dir))
@@ -8232,6 +8270,8 @@ int main(int argc, char** argv) {
   if (run_only_dry_run) {
     OKF("Dry run finished, exiting.");
     exit(0);
+  } else {
+    init_clusters();
   }
 
   cull_queue();

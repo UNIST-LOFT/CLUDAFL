@@ -302,4 +302,174 @@ void hashmap_free(struct hashmap* map) {
   ck_free(map);
 }
 
+// Cluster
+struct cluster {
+  u32 id;
+  struct vector *children;  // vector<struct queue_entry*>
+};
+
+struct cluster_node {
+  u32 node_id;
+  u32 depth;
+  struct cluster_node *parent;
+  struct hashmap *child_node_map; // hashmap<u32, struct cluster_node*>
+};
+
+struct cluster_manager {
+  struct hashmap *root_cluster_map; // hashmap<u32, struct cluster*>
+};
+
+// Cluster functions
+struct cluster *cluster_create(u32 id) {
+  struct cluster *new_cluster = (struct cluster *)ck_alloc(sizeof(struct cluster));
+  if (!new_cluster) {
+    PFATAL("Memory allocation failed");
+  }
+  new_cluster->id = id;
+  new_cluster->children = vector_create();
+  return new_cluster;
+}
+
+u32 cluster_size(struct cluster *cluster) {
+  if (!cluster) return 0;
+  return vector_size(cluster->children);
+}
+
+//Adds a queue_entry to the cluster's children vector.
+u32 cluster_add_child(struct cluster *cluster, struct queue_entry *entry) {
+  if (!cluster || !entry) return 0; 
+  push_back(cluster->children, entry);
+  return 1;
+}
+
+//Removes a child (queue_entry) from the cluster.
+//Returns 1 on success, 0 on failure (e.g., entry not found).
+u8 cluster_remove_child(struct cluster *cluster, struct queue_entry *entry) {
+  if (!cluster || !entry) return 0;
+
+  for (u32 i = 0; i < vector_size(cluster->children); ++i) {
+    if (vector_get(cluster->children, i) == entry) {
+      vector_pop(cluster->children, i);
+      return 1; // Successfully removed
+    }
+  }
+
+  return 0; // Entry not found
+}
+
+void cluster_free(struct cluster *cluster) {
+  if (!cluster) return;
+  vector_free(cluster->children);
+  ck_free(cluster);
+}
+
+// Cluster Node functions
+struct cluster_node *cluster_node_create(u32 node_id, u32 depth, struct cluster_node *parent) {
+  struct cluster_node *new_node = (struct cluster_node *)ck_alloc(sizeof(struct cluster_node));
+  if (!new_node) {
+    perror("Memory allocation failed");
+    exit(EXIT_FAILURE);
+  }
+  new_node->node_id = node_id;
+  new_node->depth = depth;
+  new_node->parent = parent;
+  new_node->child_node_map = hashmap_create(16); // Initial table size of 16, adjust as needed
+  return new_node;
+}
+
+void cluster_node_add_child(struct cluster_node *parent_node, struct cluster_node *child_node) {
+  if (!parent_node || !child_node) return;
+  hashmap_insert(parent_node->child_node_map, child_node->node_id, child_node);
+}
+
+void cluster_node_remove_child(struct cluster_node *parent_node, u32 child_node_id) {
+  if (!parent_node) return;
+  hashmap_remove(parent_node->child_node_map, child_node_id);
+}
+
+struct cluster_node *cluster_node_get_child(struct cluster_node *parent_node, u32 child_node_id) {
+  if (!parent_node) return NULL;
+  struct key_value_pair *pair = hashmap_get(parent_node->child_node_map, child_node_id);
+  return pair ? (struct cluster_node *)pair->value : NULL;
+}
+
+void cluster_node_free(struct cluster_node *node) {
+  if (!node) return;
+  hashmap_free(node->child_node_map);
+  ck_free(node);
+}
+
+// Cluster Manager functions
+struct cluster_manager *cluster_manager_create(void) {
+  struct cluster_manager *manager = (struct cluster_manager *)ck_alloc(sizeof(struct cluster_manager));
+  if (!manager) {
+    perror("Memory allocation failed");
+    exit(EXIT_FAILURE);
+  }
+  manager->root_cluster_map = hashmap_create(16); // Initial table size, adjust as needed
+  return manager;
+}
+
+void cluster_manager_add_cluster(struct cluster_manager *manager, struct cluster *cluster) {
+  if (!manager || !cluster) return;
+  hashmap_insert(manager->root_cluster_map, cluster->id, cluster);
+}
+
+//Removes a cluster from the cluster manager based on its ID.
+void cluster_manager_remove_cluster(struct cluster_manager *manager, u32 cluster_id) {
+    if (!manager) return;
+    hashmap_remove(manager->root_cluster_map, cluster_id);
+}
+
+struct cluster *cluster_manager_get_cluster(struct cluster_manager *manager, u32 cluster_id) {
+  if (!manager) return NULL;
+  struct key_value_pair *pair = hashmap_get(manager->root_cluster_map, cluster_id);
+  return pair ? (struct cluster *)pair->value : NULL;
+}
+
+void cluster_manager_free(struct cluster_manager *manager) {
+  if (!manager) return;
+
+  // Iterate through the root_cluster_map and free each cluster
+  for (u32 i = 0; i < manager->root_cluster_map->table_size; i++) {
+    struct key_value_pair *pair = manager->root_cluster_map->table[i];
+    while (pair != NULL) {
+      cluster_free((struct cluster *)pair->value);
+      pair = pair->next;
+    }
+  }
+
+  hashmap_free(manager->root_cluster_map);
+  ck_free(manager);
+}
+
+// Function to get cluster ID - you need to implement this based on your logic
+u32 get_cluster_id(struct queue_entry* q) {
+  // Replace this with your actual logic to determine the cluster ID
+  // based on the queue_entry. This is just a placeholder.
+  return q->entry_id % 5;
+}
+
+// Example of adding a new entry to a specific cluster
+void add_entry_to_cluster(struct cluster_manager *manager, struct queue_entry *entry) {
+  u32 cluster_id = get_cluster_id(entry);
+  struct cluster *target_cluster = cluster_manager_get_cluster(manager, cluster_id);
+
+  if (target_cluster) {
+    cluster_add_child(target_cluster, entry);
+  } else {
+    // Optionally create a new cluster if it doesn't exist
+    struct cluster *new_cluster = cluster_create(cluster_id);
+    cluster_add_child(new_cluster, entry);
+    cluster_manager_add_cluster(manager, new_cluster);
+  }
+}
+
+// Function to select a random entry from a cluster's children
+struct queue_entry *select_random_entry_from_cluster(struct cluster *cluster) {
+  if (!cluster || cluster_size(cluster) == 0) return NULL;
+  u32 random_index = rand() % cluster_size(cluster);
+  return (struct queue_entry *)vector_get(cluster->children, random_index);
+}
+
 #endif //DAFL_AFL_FUZZ_H
