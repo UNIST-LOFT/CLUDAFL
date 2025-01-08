@@ -62,6 +62,120 @@ struct queue_entry {
 
 };
 
+struct list_entry {
+  void *data;
+  struct list_entry *prev;
+  struct list_entry *next;
+};
+
+struct list {
+  struct list_entry *head;
+  struct list_entry *tail;
+  u32 size;
+};
+
+struct list_entry* list_entry_create(void *data) {
+  struct list_entry *entry = (struct list_entry *)ck_alloc(sizeof(struct list_entry));
+  entry->data = data;
+  entry->prev = NULL;
+  entry->next = NULL;
+  return entry;
+}
+
+struct list* list_create(void) {
+  struct list *list = (struct list *)ck_alloc(sizeof(struct list));
+  list->head = NULL;
+  list->tail = NULL;
+  list->size = 0;
+  return list;
+}
+
+void list_insert_back(struct list *list, void *data) {
+  struct list_entry *entry = list_entry_create(data);
+  if (list->size == 0) {
+    list->head = entry;
+    list->tail = entry;
+  } else {
+    list->tail->next = entry;
+    entry->prev = list->tail;
+    list->tail = entry;
+  }
+  list->size++;
+}
+
+void list_insert_front(struct list *list, void *data) {
+  struct list_entry *entry = list_entry_create(data);
+  if (list->size == 0) {
+    list->head = entry;
+    list->tail = entry;
+  } else {
+    list->head->prev = entry;
+    entry->next = list->head;
+    list->head = entry;
+  }
+  list->size++;
+}
+
+void list_insert(struct list *list, struct list_entry *entry_prev, void *data) {
+  struct list_entry *entry = list_entry_create(data);
+  if (entry_prev == NULL) {
+    list_insert_front(list, data);
+  } else {
+    entry->next = entry_prev->next;
+    entry->prev = entry_prev;
+    entry_prev->next = entry;
+    if (entry->next != NULL) {
+      entry->next->prev = entry;
+    }
+    list->size++;
+  }
+}
+
+void list_remove(struct list *list, struct list_entry *entry) {
+  if (entry->prev != NULL) {
+    entry->prev->next = entry->next;
+  } else {
+    list->head = entry->next;
+  }
+  if (entry->next != NULL) {
+    entry->next->prev = entry->prev;
+  } else {
+    list->tail = entry->prev;
+  }
+  ck_free(entry);
+  list->size--;
+}
+
+struct list_entry* list_get(struct list *list, void *data) {
+  struct list_entry *entry = list->head;
+  while (entry != NULL) {
+    if (entry->data == data) {
+      return entry;
+    }
+    entry = entry->next;
+  }
+  return NULL;
+}
+
+struct list_entry* list_get_head(struct list *list) {
+  return list->head;
+}
+
+u32 list_size(struct list *list) {
+  if (list == NULL) return 0;
+  return list->size;
+}
+
+void list_free(struct list *list) {
+  struct list_entry *entry = list->head;
+  while (entry != NULL) {
+    struct list_entry *next = entry->next;
+    ck_free(entry);
+    entry = next;
+  }
+  ck_free(list);
+}
+
 // Define the vector structure
 struct vector {
   void **data;
@@ -305,7 +419,8 @@ void hashmap_free(struct hashmap* map) {
 // Cluster
 struct cluster {
   u32 id;
-  struct vector *children;  // vector<struct queue_entry*>
+  // struct vector *children;  // vector<struct queue_entry*>
+  struct list *cluster_nodes; // list<struct cluster_node*>
 };
 
 struct cluster_node {
@@ -326,19 +441,20 @@ struct cluster *cluster_create(u32 id) {
     PFATAL("Memory allocation failed");
   }
   new_cluster->id = id;
-  new_cluster->children = vector_create();
+  new_cluster->cluster_nodes = list_create();
   return new_cluster;
 }
 
 u32 cluster_size(struct cluster *cluster) {
   if (!cluster) return 0;
-  return vector_size(cluster->children);
+  return list_size(cluster->cluster_nodes);
 }
 
 //Adds a queue_entry to the cluster's children vector.
 u32 cluster_add_child(struct cluster *cluster, struct queue_entry *entry) {
   if (!cluster || !entry) return 0; 
-  push_back(cluster->children, entry);
+  // TODO: sorted insert
+  list_insert_back(cluster->cluster_nodes, entry);
   return 1;
 }
 
@@ -347,11 +463,10 @@ u32 cluster_add_child(struct cluster *cluster, struct queue_entry *entry) {
 u8 cluster_remove_child(struct cluster *cluster, struct queue_entry *entry) {
   if (!cluster || !entry) return 0;
 
-  for (u32 i = 0; i < vector_size(cluster->children); ++i) {
-    if (vector_get(cluster->children, i) == entry) {
-      vector_pop(cluster->children, i);
-      return 1; // Successfully removed
-    }
+  struct list_entry *entry_node = list_get(cluster->cluster_nodes, entry);
+  if (entry_node) {
+    list_remove(cluster->cluster_nodes, entry_node);
+    return 1;
   }
 
   return 0; // Entry not found
@@ -359,7 +474,7 @@ u8 cluster_remove_child(struct cluster *cluster, struct queue_entry *entry) {
 
 void cluster_free(struct cluster *cluster) {
   if (!cluster) return;
-  vector_free(cluster->children);
+  list_free(cluster->cluster_nodes);
   ck_free(cluster);
 }
 
@@ -468,8 +583,7 @@ void add_entry_to_cluster(struct cluster_manager *manager, struct queue_entry *e
 // Function to select a random entry from a cluster's children
 struct queue_entry *select_random_entry_from_cluster(struct cluster *cluster) {
   if (!cluster || cluster_size(cluster) == 0) return NULL;
-  u32 random_index = rand() % cluster_size(cluster);
-  return (struct queue_entry *)vector_get(cluster->children, random_index);
+  return (struct queue_entry *)list_get_head(cluster->cluster_nodes)->data;
 }
 
 #endif //DAFL_AFL_FUZZ_H
