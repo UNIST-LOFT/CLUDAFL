@@ -5145,13 +5145,11 @@ static u32 cur_cluster_index=0;
 struct queue_entry *select_next_cluster_dafl(void) {
   // Select next cluster
   struct cluster *clu;
-  if (cur_cluster_index>=cluster_manager->root_cluster_map->size) {
-    cur_cluster_index=0;
-    clu=(struct cluster*)cluster_manager->root_cluster_map->table[0]->value;
+  if (cur_cluster_index >= vector_size(cluster_manager->clusters)) {
+    cur_cluster_index = 0;
   }
-  else {
-    clu=(struct cluster*)cluster_manager->root_cluster_map->table[cur_cluster_index++]->value;
-  }
+  clu = vector_get(cluster_manager->clusters, cur_cluster_index);
+  cur_cluster_index++;
 
   // Select next input
   if (clu->first_unhandled) { // This is set only when a new item was added.

@@ -27,6 +27,37 @@ struct dfg_node_info {
   u32 max_paths;
 };
 
+struct array {
+  u32 size;
+  u32 *data;
+};
+
+struct array *array_create(u32 size) {
+  struct array *arr = (struct array *)ck_alloc(sizeof(struct array));
+  arr->size = size;
+  arr->data = (u32 *)ck_alloc(size * sizeof(u32));
+  return arr;
+}
+
+void array_free(struct array *arr) {
+  ck_free(arr->data);
+  ck_free(arr);
+}
+
+void array_set(struct array *arr, u32 index, u32 value) {
+  if (index >= arr->size) {
+    FATAL("Index out of bounds: %u >= %u", index, arr->size);
+  }
+  arr->data[index] = value;
+}
+
+u32 array_get(struct array *arr, u32 index) {
+  if (index >= arr->size) {
+    FATAL("Index out of bounds: %u >= %u", index, arr->size);
+  }
+  return arr->data[index];
+}
+
 struct queue_entry {
 
   u8* fname;                          /* File name for the test case      */
@@ -55,11 +86,12 @@ struct queue_entry {
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
 
+  // CLUDAFL
   u32 input_hash;
   u32 dfg_hash;
+  struct array *dfg_vec;
 
   struct queue_entry *next;           /* Next element, if any             */
-
 };
 
 struct list_entry {
@@ -441,7 +473,8 @@ struct cluster_node {
 };
 
 struct cluster_manager {
-  struct hashmap *root_cluster_map; // hashmap<u32, struct cluster*>
+  struct vector *clusters; // vector<struct cluster*>
+  // struct hashmap *root_cluster_map; // hashmap<u32, struct cluster*>
 };
 
 // Cluster functions
@@ -511,9 +544,9 @@ void cluster_free(struct cluster *cluster) {
  */
 struct cluster *select_cluster_random(struct cluster_manager *manager) {
   if (!manager) return NULL;
-  u32 random_index = rand() % manager->root_cluster_map->table_size;
-  struct key_value_pair *pair = manager->root_cluster_map->table[random_index];
-  return pair ? (struct cluster *)pair->value : NULL;
+  u32 random_index = rand() % vector_size(manager->clusters);
+  struct cluster *clu = (struct cluster *)vector_get(manager->clusters, random_index);
+  return clu;
 }
 
 // Cluster Node functions
@@ -559,40 +592,41 @@ struct cluster_manager *cluster_manager_create(void) {
     perror("Memory allocation failed");
     exit(EXIT_FAILURE);
   }
-  manager->root_cluster_map = hashmap_create(16); // Initial table size, adjust as needed
+  manager->clusters = vector_create(); // Initial table size, adjust as needed
   return manager;
 }
 
 void cluster_manager_add_cluster(struct cluster_manager *manager, struct cluster *cluster) {
   if (!manager || !cluster) return;
-  hashmap_insert(manager->root_cluster_map, cluster->id, cluster);
+  push_back(manager->clusters, cluster);
 }
 
-//Removes a cluster from the cluster manager based on its ID.
-void cluster_manager_remove_cluster(struct cluster_manager *manager, u32 cluster_id) {
-    if (!manager) return;
-    hashmap_remove(manager->root_cluster_map, cluster_id);
-}
+//Removes a cluster from the cluster manager based on its ID. -> Not used
+// void cluster_manager_remove_cluster(struct cluster_manager *manager, u32 cluster_id) {
+//   if (!manager) return;
+//   hashmap_remove(manager->root_cluster_map, cluster_id);
+// }
 
 struct cluster *cluster_manager_get_cluster(struct cluster_manager *manager, u32 cluster_id) {
   if (!manager) return NULL;
-  struct key_value_pair *pair = hashmap_get(manager->root_cluster_map, cluster_id);
-  return pair ? (struct cluster *)pair->value : NULL;
+  for (u32 i = 0; i < vector_size(manager->clusters); i++) {
+    struct cluster *clu = (struct cluster *)vector_get(manager->clusters, i);
+    if (clu->id == cluster_id) {
+      return clu;
+    }
+  }
+  return NULL;
 }
 
 void cluster_manager_free(struct cluster_manager *manager) {
   if (!manager) return;
 
-  // Iterate through the root_cluster_map and free each cluster
-  for (u32 i = 0; i < manager->root_cluster_map->table_size; i++) {
-    struct key_value_pair *pair = manager->root_cluster_map->table[i];
-    while (pair != NULL) {
-      cluster_free((struct cluster *)pair->value);
-      pair = pair->next;
-    }
+  for (u32 i = 0; i < vector_size(manager->clusters); i++) {
+    struct cluster *clu = (struct cluster *)vector_get(manager->clusters, i);
+    cluster_free(clu);
   }
 
-  hashmap_free(manager->root_cluster_map);
+  vector_free(manager->clusters);
   ck_free(manager);
 }
 
