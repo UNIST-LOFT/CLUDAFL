@@ -2893,7 +2893,7 @@ static void perform_dry_run(char** argv) {
     close(fd);
 
     res = calibrate_case(argv, q, use_mem, 0, 1);
-    LOGF("[dry-run] [file %s] [hash %u] [dfg %u] [res %d] [prox %d] [pre %d]\n", q->fname, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
+    LOGF("[dry-run] [file %s] [hash %u] [dfg %u] [res %d] [prox %lld] [pre %lld]\n", q->fname, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
 
     save_dry_run(save_file, q, q->exec_us, res);
 

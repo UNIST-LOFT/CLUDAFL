@@ -507,7 +507,7 @@ void print_list(u32 id, struct list *list) {
   fprintf(stderr, "Cluster %d: ", id);
   while (entry != NULL) {
     struct queue_entry *q = (struct queue_entry *)entry->data;
-    fprintf(stderr, "[id %d, score %d], ", q->entry_id, q->prox_score);
+    fprintf(stderr, "[id %d, score %lld], ", q->entry_id, q->prox_score);
     entry = entry->next;
   }
   fprintf(stderr, "\n");
