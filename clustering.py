@@ -80,13 +80,13 @@ def kmeans(vectors:Dict[str, List[int]], k:int=-1):
             best_k=2
             best_score=-1.
 
-            for k in K_RANGE:
-                kmeans = cluster.KMeans(n_clusters=k)
+            for _k in K_RANGE:
+                kmeans = cluster.KMeans(n_clusters=_k)
                 res=kmeans.fit_predict(list(vectors.values()))
                 score=metrics.silhouette_score(list(vectors.values()),res)
                 if score>best_score:
                     best_score=score
-                    best_k=k
+                    best_k=_k
             
             kmeans = cluster.KMeans(n_clusters=best_k)
         else:
@@ -128,13 +128,13 @@ def bisecting_kmeans(vectors:Dict[str, List[int]], k:int=-1):
             best_k=2
             best_score=-1.
 
-            for k in K_RANGE:
-                kmeans = cluster.BisectingKMeans(n_clusters=k)
+            for _k in K_RANGE:
+                kmeans = cluster.BisectingKMeans(n_clusters=_k)
                 res=kmeans.fit_predict(list(vectors.values()))
                 score=metrics.silhouette_score(list(vectors.values()),res)
                 if score>best_score:
                     best_score=score
-                    best_k=k
+                    best_k=_k
             
             kmeans = cluster.BisectingKMeans(n_clusters=best_k)
         else:
