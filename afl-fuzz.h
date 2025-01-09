@@ -112,12 +112,13 @@ struct list_entry {
 };
 
 struct list {
+  u32 size;
   struct list_entry *head;
   struct list_entry *tail;
-  u32 size;
 };
 
 struct list_entry* list_entry_create(void *data) {
+  fprintf(stderr, "list_entry_create %d\n", data ? ((struct queue_entry *)data)->entry_id : -1);
   struct list_entry *entry = (struct list_entry *)ck_alloc(sizeof(struct list_entry));
   entry->data = data;
   entry->prev = NULL;
@@ -134,6 +135,7 @@ struct list* list_create(void) {
 }
 
 struct list_entry* list_insert_back(struct list *list, void *data) {
+  fprintf(stderr, "list_insert_back\n");
   struct list_entry *entry = list_entry_create(data);
   if (list->size == 0) {
     list->head = entry;
@@ -161,24 +163,41 @@ struct list_entry* list_insert_front(struct list *list, void *data) {
   return entry;
 }
 
-struct list_entry* list_insert(struct list *list, struct list_entry *entry_prev, void *data) {
-  struct list_entry *entry = NULL;
-  if (entry_prev == NULL) { // Insert at the front
-    entry = list_insert_front(list, data);
-  } else {
-    entry = list_entry_create(data);
-    // Update tail if entry_prev is the tail
-    if (entry_prev == list->tail) {
-      list->tail = entry;
-    }
-    entry->next = entry_prev->next;
-    entry->prev = entry_prev;
-    entry_prev->next = entry;
-    if (entry->next != NULL) {
-      entry->next->prev = entry;
-    }
-    list->size++;
+struct list_entry* list_insert_left(struct list *list, struct list_entry *entry_next, void *data) {
+  fprintf(stderr, "list_insert_left: list head %p tail %p size %d entry_next %p data %d\n",
+          list->head, list->tail, list->size, entry_next, data ? ((struct queue_entry *)data)->entry_id : -1
+  );
+  if (entry_next == NULL) { // Insert at the front
+    return list_insert_front(list, data);
   }
+  struct list_entry *entry = list_entry_create(data);
+  entry->prev = entry_next->prev;
+  entry->next = entry_next;
+  entry_next->prev = entry;
+  if (entry->prev != NULL) {
+    entry->prev->next = entry;
+  } else {
+    list->head = entry;
+  }
+  list->size++;
+  return entry;
+}
+
+
+struct list_entry* list_insert_right(struct list *list, struct list_entry *entry_prev, void *data) {
+  if (entry_prev == NULL) { // Insert at the back
+    return list_insert_back(list, data);
+  }
+  struct list_entry *entry = list_entry_create(data);
+  entry->prev = entry_prev;
+  entry->next = entry_prev->next;
+  entry_prev->next = entry;
+  if (entry->next != NULL) {
+    entry->next->prev = entry;
+  } else {
+    list->tail = entry;
+  }
+  list->size++;
   return entry;
 }
 
@@ -485,8 +504,19 @@ struct cluster_node {
 
 struct cluster_manager {
   struct vector *clusters; // vector<struct cluster*>
-  // struct hashmap *root_cluster_map; // hashmap<u32, struct cluster*>
+  u32 cur_cluster;
 };
+
+void print_list(u32 id, struct list *list) {
+  struct list_entry *entry = list->head;
+  fprintf(stderr, "Cluster %d: ", id);
+  while (entry != NULL) {
+    struct queue_entry *q = (struct queue_entry *)entry->data;
+    fprintf(stderr, "[id %d, score %d], ", q->entry_id, q->prox_score);
+    entry = entry->next;
+  }
+  fprintf(stderr, "\n");
+}
 
 // Cluster functions
 struct cluster *cluster_create(u32 id) {
@@ -517,14 +547,16 @@ u32 cluster_add_child(struct cluster *cluster, struct queue_entry *entry) {
     struct queue_entry *cur_entry = (struct queue_entry*)entry_node->data;
     if (!cluster->first_unhandled && !cur_entry->handled_in_cycle)
       cluster->first_unhandled = entry_node;
-    if (cur_entry->prox_score < entry->prox_score) {
-      last_added_entry = list_insert(cluster->cluster_nodes, entry_node->prev, entry);
+    if (cur_entry->prox_score <= entry->prox_score) {
+      last_added_entry = list_insert_left(cluster->cluster_nodes, entry_node, entry);
       break;
     }
     entry_node = entry_node->next;
   }
+  // If the entry is the smallest (or list is empty), add it to the end
   if (!last_added_entry)
     last_added_entry = list_insert_back(cluster->cluster_nodes, entry);
+  print_list(cluster->id, cluster->cluster_nodes);
   if (!cluster->first_unhandled)
     cluster->first_unhandled = last_added_entry;
   return 1;
@@ -626,7 +658,8 @@ struct cluster *cluster_manager_get_or_add_cluster(struct cluster_manager *manag
       return clu;
     }
   }
-  return NULL;
+  cluster_manager_add_cluster(manager, cluster_create(cluster_id));
+  return (struct cluster *)vector_get(manager->clusters, vector_size(manager->clusters) - 1);
 }
 
 struct cluster *cluster_manager_get_cluster(struct cluster_manager *manager, u32 index) {

@@ -6,6 +6,9 @@ import sklearn.metrics as metrics
 import argparse
 import sbsv
 import pickle
+import time
+import sys
+
 
 def read_result(filename: str) -> dict:
     parser = sbsv.parser()
@@ -34,6 +37,7 @@ def save_clusters(clusters:Dict[str,int], path:str):
     if path == "":
         for name,cluster in clusters.items():
             print(f'{name} {cluster}')
+            print(f'{name} {cluster}', file=sys.stderr)
         return
     with open(path,'w') as f:
         for name,cluster in clusters.items():
@@ -141,6 +145,7 @@ def bisecting_kmeans(vectors:Dict[str, List[int]], k:int=-1):
     return {name:cluster for name,cluster in zip(vectors.keys(),res)}
 
 if __name__=='__main__':
+    start = time.time()
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('vector_path', action='store', type=str, help='Path to the directory containing the vectors')
     arg_parser.add_argument('cluster', action='store', type=str, help='Type of cluster',choices=['kmeans','bisecting-kmeans'])
@@ -157,3 +162,4 @@ if __name__=='__main__':
     elif args.cluster=='bisecting-kmeans':
         clusters=bisecting_kmeans(vectors,args.k)
         save_clusters(clusters,args.output)
+    print(f"Clustering time: {time.time()-start}s", file=sys.stderr)

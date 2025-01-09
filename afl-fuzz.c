@@ -2830,19 +2830,34 @@ static void check_map_coverage(void) {
 
 }
 
+static char *array_print(struct array *arr) {
+  if (!arr || arr->size == 0) {
+    return strdup("");
+  }
+
+  u32 size = 12 * arr->size; // Preallocate enough space for each u32 and commas
+  char *str = ck_alloc(size + 1);
+  if (!str) {
+    FATAL("Memory allocation failed");
+  }
+
+  char *ptr = str;
+  for (u32 i = 0; i < arr->size; i++) {
+    ptr += sprintf(ptr, "%u,", array_get(arr, i));
+  }
+  *ptr = '\0'; // Null-terminate the string
+  return str;
+}
 
 static void save_dry_run(FILE *save_file, struct queue_entry *q, u64 exec_len, u8 res) {
 
   char *fn = q->fname;
   u32 hash = q->input_hash;
   u32 dfg_hash = q->dfg_hash;
-
-  fprintf(save_file, "[seed] [file %s] [hash %u] [dfg %u] [res %d] [time %llu] [vec ", fn, hash, dfg_hash, res, exec_len);
-  for (u32 i = 0; i < array_size(q->dfg_arr); i++) {
-    fprintf(save_file, "%u,", array_get(q->dfg_arr, i));
-  }
-  fprintf(save_file, "]\n");
-  fflush(save_file);
+  char *vec_str = array_print(q->dfg_arr);
+  fprintf(save_file, "[seed] [file %s] [hash %u] [dfg %u] [res %d] [time %llu] [vec %s]\n", fn, hash, dfg_hash, res, exec_len, vec_str);
+  LOGF("[seed] [file %s] [hash %u] [dfg %u] [res %d] [exec-time %llu] [time %llu] [vec %s]\n", fn, hash, dfg_hash, res, exec_len, get_cur_time() - start_time, vec_str);
+  ck_free(vec_str);
 
 }
 
@@ -3275,6 +3290,7 @@ static void write_crash_readme(void) {
 
 void predict_clusters(u8 *out_file) {
 
+  u64 clustering_start_time = get_cur_time();
   char *cludafl_dir = getenv("CLUDAFL");
   if (cludafl_dir == NULL) {
     FATAL("CLUDAFL environment variable not set");
@@ -3295,7 +3311,8 @@ void predict_clusters(u8 *out_file) {
     }
     struct queue_entry *q = kvp->value;
     // Add q to cluster
-    cluster_add_child(cluster_manager_get_cluster(cluster_manager,cluster_id),q);
+    cluster_add_child(cluster_manager_get_cluster(cluster_manager, cluster_id),q);
+    LOGF("[cluster] [seed %d] [cluster %d] [elapsed %llu] [time %llu]\n", q->entry_id, cluster_id, get_cur_time() - clustering_start_time, get_cur_time() - start_time);
   }
   pclose(cluster_file);
   ck_free(cluster_cmd);
@@ -3353,7 +3370,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     // CLUDAFL: Save run results - this should be done after calibration
     u8* save_filename = alloc_printf("%s/results.sbsv", out_dir);
     FILE *save_file = fopen(save_filename, "w");
-    save_dry_run(save_file, queue_cur, queue_cur->exec_us, fault);
+    save_dry_run(save_file, queue_last, queue_last->exec_us, fault);
     fclose(save_file);
 
     predict_clusters(save_filename);
@@ -5186,35 +5203,38 @@ struct queue_entry *select_next_cluster_random(void) {
   return queue_cur;
 }
 
-static u32 cur_cluster_index=0;
 /**
  * Select a cluster and input with original DAFL
  */
 struct queue_entry *select_next_cluster_dafl(void) {
   // Select next cluster
   struct cluster *clu;
-  if (cur_cluster_index >= vector_size(cluster_manager->clusters)) {
-    cur_cluster_index = 0;
+  if (cluster_manager->cur_cluster >= vector_size(cluster_manager->clusters)) {
+    cluster_manager->cur_cluster = 0;
   }
-  clu = vector_get(cluster_manager->clusters, cur_cluster_index);
-  cur_cluster_index++;
+  clu = vector_get(cluster_manager->clusters, cluster_manager->cur_cluster);
+  cluster_manager->cur_cluster++;
 
+  struct list_entry *selected = NULL;
   // Select next input
   if (clu->first_unhandled) { // This is set only when a new item was added.
-    queue_cur = clu->first_unhandled;
+    selected = clu->first_unhandled;
     clu->first_unhandled = NULL;
   } else { // Proceed to the next unhandled item in the queue.
     struct list_entry *le = clu->cur;
     while (le && ((struct queue_entry*)le->data)->handled_in_cycle)
       le = le->next;
     if (le) {
-      queue_cur = le->data;
+      selected = le;
       clu->cur = le;
     } else {
-      queue_cur = select_next_cluster_dafl(); // Handle the empty cluster
+      return select_next_cluster_dafl(); // Handle the empty cluster
     }
   }
-  return queue_cur;
+  if (selected) {
+    return selected->data;
+  }
+  return NULL;
 }
 
 /**
@@ -5227,7 +5247,7 @@ struct queue_entry *select_next(void) {
     return select_next_random();
   } else if (strcmp(select_strategy, "cluster_random") == 0) {
     return select_next_cluster_random();
-  } else if (strcmp(select_strategy, "cluster_dafl") == 0) {
+  } else if (strcmp(select_strategy, "dafl_cluster") == 0) {
     return select_next_cluster_dafl();
   }
   return NULL;
@@ -8502,7 +8522,7 @@ int main(int argc, char** argv) {
     //   while (queue_cur && queue_cur->handled_in_cycle)
     //     queue_cur = queue_cur->next;
     // }
-    queue_cur=select_next();
+    queue_cur = select_next();
   }
 
   if (queue_cur) show_stats();
