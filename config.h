@@ -278,6 +278,7 @@
 
 #define SHM_ENV_VAR         "__AFL_SHM_ID"
 #define SHM_ENV_VAR_DFG     "__AFL_SHM_ID_DFG"
+#define SHM_ENV_VAR_HIT     "__AFL_SHM_ID_HIT"
 
 /* Other less interesting, internal-only variables. */
 
@@ -329,6 +330,7 @@
 #define MAP_SIZE_POW2       16
 #define MAP_SIZE            (1 << MAP_SIZE_POW2)
 #define DFG_MAP_SIZE        32568
+#define MAX_PARETO_FRONT    10000
 
 /* Maximum allocator request size (keep well under INT_MAX): */
 

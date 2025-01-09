@@ -60,6 +60,9 @@
 u8  __afl_area_initial[MAP_SIZE];
 u8* __afl_area_ptr = __afl_area_initial;
 
+u8 __afl_area_target_hit[1];
+u8* __afl_area_target_hit_ptr = __afl_area_target_hit;
+
 u32  __afl_area_initial_dfg[DFG_MAP_SIZE];
 u32* __afl_area_dfg_ptr = __afl_area_initial_dfg;
 
@@ -77,6 +80,7 @@ static void __afl_map_shm(void) {
 
   u8 *id_str = getenv(SHM_ENV_VAR);
   u8 *id_str_dfg = getenv(SHM_ENV_VAR_DFG);
+  u8 *id_str_hit = getenv(SHM_ENV_VAR_HIT);
 
   /* If we're running under AFL, attach to the appropriate region, replacing the
      early-stage __afl_area_initial region that is needed to allow some really
@@ -86,14 +90,17 @@ static void __afl_map_shm(void) {
 
     u32 shm_id = atoi(id_str);
     u32 shm_id_dfg = atoi(id_str_dfg);
+    u32 shm_id_hit = atoi(id_str_hit);
 
     __afl_area_ptr = shmat(shm_id, NULL, 0);
     __afl_area_dfg_ptr = shmat(shm_id_dfg, NULL, 0);
+    __afl_area_target_hit_ptr = shmat(shm_id_hit, NULL, 0);
 
     /* Whooooops. */
 
     if (__afl_area_ptr == (void *)-1) _exit(1);
     if (__afl_area_dfg_ptr == (void *)-1) _exit(1);
+    if (__afl_area_target_hit_ptr == (void *)-1) _exit(1);
 
     /* Write something into the bitmap so that even with low AFL_INST_RATIO,
        our parent doesn't give up on us. */
@@ -204,8 +211,8 @@ int __afl_persistent_loop(unsigned int max_cnt) {
 
       memset(__afl_area_ptr, 0, MAP_SIZE);
       memset(__afl_area_dfg_ptr, 0, sizeof(u32) * DFG_MAP_SIZE);
+      memset(__afl_area_target_hit_ptr, 0, sizeof(u8));
       __afl_area_ptr[0] = 1;
-      __afl_prev_loc = 0;
     }
 
     cycle_cnt  = max_cnt;

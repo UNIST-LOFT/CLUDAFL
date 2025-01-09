@@ -59,6 +59,8 @@ bool dfg_scoring = false;
 bool no_filename_match = false;
 std::set<std::string> instr_targets;
 std::map<std::string,std::pair<unsigned int,unsigned int>> dfg_node_map;
+unsigned int max_score = 0;
+std::string target_info;
 
 
 namespace {
@@ -96,19 +98,28 @@ void initDFGNodeMap(char* dfg_file) {
   std::ifstream stream(dfg_file);
 
   while (std::getline(stream, line)) {
+    // PACFuzz: DFG file format - <dafl_score> <path_score> <file_name>:<line_no>
+    // PACFuzz: We discard the path score for this version.
     std::size_t space_idx = line.find(" ");
-    std::string score_str = line.substr(0, space_idx);
-    std::size_t space_idx2 = line.find(" ", space_idx + 1);
-    std::string path_cnt_str = line.substr(space_idx + 1, space_idx2);
-    std::string targ_line = line.substr(space_idx2 + 1, std::string::npos);
-    int score = stoi(score_str);
-    unsigned long long path_cnt = stoull(path_cnt_str);
-    dfg_node_map[targ_line] = std::make_pair(idx++, (unsigned int) score);
-    if (idx >= DFG_MAP_SIZE - 1) {
+    std::string dafl_score_str = line.substr(0, space_idx);
+    std::size_t space_idx_2 = line.find(" ", space_idx + 1);
+    std::string path_score_str = line.substr(space_idx + 1, space_idx_2);
+    std::string targ_line = line.substr(space_idx_2 + 1, std::string::npos);
+    int dafl_score = stoi(dafl_score_str);
+    dfg_node_map[targ_line] = std::make_pair(idx++, (unsigned int) dafl_score);
+
+    if (dafl_score >= max_score) {
+      max_score = dafl_score;
+      target_info = targ_line;
+    }
+
+    if (idx >= DFG_MAP_SIZE) {
       std::cout << "Input DFG is too large (check DFG_MAP_SIZE)" << std::endl;
       exit(1);
     }
   }
+
+  OKF("Target node: %s with score %d", target_info.c_str(), max_score);
 }
 
 
@@ -152,6 +163,10 @@ bool AFLCoverage::runOnModule(Module &M) {
   GlobalVariable *AFLMapDFGPtr =
       new GlobalVariable(M, PointerType::get(Int32Ty, 0), false,
                          GlobalValue::ExternalLinkage, 0, "__afl_area_dfg_ptr");
+
+  GlobalVariable *AFLMapHitPtr =
+      new GlobalVariable(M, PointerType::get(Int8Ty, 0), false,
+                         GlobalValue::ExternalLinkage, 0, "__afl_area_target_hit_ptr");
 
   GlobalVariable *AFLPrevLoc = new GlobalVariable(
       M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
@@ -207,6 +222,7 @@ bool AFLCoverage::runOnModule(Module &M) {
       bool is_dfg_node = false;
       unsigned int node_idx = 0;
       unsigned int node_score = 0;
+      bool is_target_node = false;
 
       if (is_inst_targ) {
         inst_blocks++;
@@ -230,6 +246,29 @@ bool AFLCoverage::runOnModule(Module &M) {
             std::string targ_str = stream.str();
             if (dfg_node_map.count(targ_str) > 0) {
               is_dfg_node = true;
+
+              if (targ_str.compare(target_info) == 0) {
+                is_target_node = true;
+
+                // Instrument the target node in term of instruction.
+                IRBuilder<> IRB(&inst);
+                LoadInst *HitMap = IRB.CreateLoad(AFLMapHitPtr);
+                HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+                ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
+                Value *HitMapMapPtrIdx = IRB.CreateGEP(HitMap, Idx);
+                IRB.CreateStore(ConstantInt::get(Int8Ty, 1), HitMapMapPtrIdx)
+                    ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+                Instruction *nextInst = inst.getNextNonDebugInstruction();
+                IRBuilder<> IRB1(nextInst);
+                LoadInst *HitMap1 = IRB1.CreateLoad(AFLMapHitPtr);
+                HitMap1->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+                ConstantInt * Idx1 = ConstantInt::get(Int32Ty, 0);
+                Value *HitMapMapPtrIdx1 = IRB1.CreateGEP(HitMap1, Idx1);
+                IRB1.CreateStore(ConstantInt::get(Int8Ty, 0), HitMapMapPtrIdx1)
+                    ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+              }
+
               auto node_info = dfg_node_map[targ_str];
               node_idx = node_info.first;
               node_score = node_info.second;

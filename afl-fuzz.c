@@ -150,6 +150,8 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with code coverage bitmap    */
 EXP_ST u32* dfg_bits;                 /* SHM with DFG coverage bitmap     */
+EXP_ST u8* target_hit;                /* SHM with target hit              */
+EXP_ST u32 dfg_target_idx;            /* Index of the target DFG node     */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -159,6 +161,7 @@ static u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
 static s32 shm_id;                    /* ID of the SHM for code coverage  */
 static s32 shm_id_dfg;                /* ID of the SHM for DFG coverage   */
+static s32 shm_id_hit;                /* ID of the SHM for target hit     */
 
 static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
@@ -183,6 +186,8 @@ EXP_ST u32 queued_paths,              /* Total number of queued testcases */
 
 EXP_ST u64 total_crashes,             /* Total number of crashes          */
            unique_crashes,            /* Crashes with unique signatures   */
+           total_saved_crashes,       /* Number of crash states saved     */
+           total_saved_positives,     /* Number of positive states saved  */
            total_tmouts,              /* Total number of timeouts         */
            unique_tmouts,             /* Timeouts with unique signatures  */
            unique_hangs,              /* Hangs with unique signatures     */
@@ -288,6 +293,7 @@ static struct hashmap *queue_input_hash_map = NULL; // map<input_hash, queue_ent
 static struct cluster_manager *cluster_manager = NULL; // cluster manager
 static u8 *select_strategy = "dafl"; // strategy for selecting input. (dafl, random, random_cluster, dafl_cluster, default: dafl)
 
+static struct hashmap *val_hashmap = NULL;
 /* Fuzzing stages */
 
 enum {
@@ -1294,6 +1300,7 @@ static void remove_shm(void) {
 
   shmctl(shm_id, IPC_RMID, NULL);
   shmctl(shm_id_dfg, IPC_RMID, NULL);
+  shmctl(shm_id_hit, IPC_RMID, NULL);
 
 }
 
@@ -1436,6 +1443,7 @@ EXP_ST void setup_shm(void) {
 
   u8* shm_str;
   u8* shm_str_dfg;
+  u8 *shm_str_hit;
 
   if (!in_bitmap) memset(virgin_bits, 255, MAP_SIZE);
 
@@ -1445,6 +1453,7 @@ EXP_ST void setup_shm(void) {
   shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
   shm_id_dfg = shmget(IPC_PRIVATE, sizeof(u32) * DFG_MAP_SIZE,
                       IPC_CREAT | IPC_EXCL | 0600);
+  shm_id_hit = shmget(IPC_PRIVATE, sizeof(u8), IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -1452,6 +1461,7 @@ EXP_ST void setup_shm(void) {
 
   shm_str = alloc_printf("%d", shm_id);
   shm_str_dfg = alloc_printf("%d", shm_id_dfg);
+  shm_str_hit = alloc_printf("%d", shm_id_hit);
 
   /* If somebody is asking us to fuzz instrumented binaries in dumb mode,
      we don't want them to detect instrumentation, since we won't be sending
@@ -1460,15 +1470,19 @@ EXP_ST void setup_shm(void) {
 
   if (!dumb_mode) setenv(SHM_ENV_VAR, shm_str, 1);
   if (!dumb_mode) setenv(SHM_ENV_VAR_DFG, shm_str_dfg, 1);
+  if (!dumb_mode) setenv(SHM_ENV_VAR_HIT, shm_str_hit, 1);
 
   ck_free(shm_str);
   ck_free(shm_str_dfg);
+  ck_free(shm_str_hit);
 
   trace_bits = shmat(shm_id, NULL, 0);
   dfg_bits = shmat(shm_id_dfg, NULL, 0);
+  target_hit = shmat(shm_id_hit, NULL, 0);
 
   if (trace_bits == (void *)-1) PFATAL("shmat() failed");
   if (dfg_bits == (void *)-1) PFATAL("shmat() failed");
+  if (target_hit == (void *)-1) PFATAL("shmat() failed");
 
 }
 
@@ -2378,6 +2392,7 @@ static u8 run_target(char** argv, u32 timeout) {
 
   memset(trace_bits, 0, MAP_SIZE);
   memset(dfg_bits, 0, sizeof(u32) * DFG_MAP_SIZE);
+  memset(target_hit, 0, sizeof(u8));
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -2828,6 +2843,15 @@ static void check_map_coverage(void) {
 
   WARNF("Recompile binary with newer version of afl to improve coverage!");
 
+}
+
+static u8 check_target_covered() {
+  return dfg_bits[dfg_target_idx] != 0;
+}
+
+static u8 is_crashed_at_target_loc() {
+  // LOGF("[PacFuzz] [is_crashed %d] [time %llu]\n", target_hit[0], get_cur_time() - start_time);
+  return target_hit[0] == 1;
 }
 
 static char *array_print(struct array *arr) {
@@ -3288,6 +3312,280 @@ static void write_crash_readme(void) {
 
 }
 
+/* PacFuzz: file hash function */
+
+static u32 hash_file(u8 *filename) {
+
+  FILE *file = fopen(filename, "r");
+
+  if (!file) {
+    WARNF("Cannot open file %s", filename);
+    return 0;
+  }
+
+  fseek(file, 0, SEEK_END);
+  u64 length = ftell(file);
+  fseek(file, 0, SEEK_SET);
+
+  u64 max_read = 1 << 25; // 32MB
+  length = length < max_read ? length : max_read;
+
+  u8 *buf = ck_alloc_nozero(length);
+  fread(buf, 1, length, file);
+  fclose(file);
+
+  u32 hash = hash32(buf, length, HASH_CONST);
+  ck_free(buf);
+  return hash;
+
+}
+
+/* PacFuzz: save valuation function */
+
+static void save_valuation(u32 val_hash, u8 *valuation_file, u8 crashed) {
+  u8 *target_file = alloc_printf("memory/%s/id:%06llu", crashed ? "neg" : "pos",
+                                  crashed ? total_saved_crashes : total_saved_positives);
+  LOGF("[PacFuzz] [save_valuation] [%s] [seed %d] [entry %d] [id %llu] [hash %u] [time %llu] [file %s]\n", crashed == 1 ? "neg" : "pos", queue_cur ? queue_cur->entry_id : -1, queue_last ? queue_last->entry_id : -1,
+       crashed ? total_saved_crashes : total_saved_positives, val_hash, get_cur_time() - start_time, target_file);
+  u8 *target_file_full = alloc_printf("%s/%s", out_dir, target_file);
+  rename(valuation_file, target_file_full);
+  ck_free(valuation_file);
+  ck_free(target_file);
+  ck_free(target_file_full);
+  if (crashed) {
+    total_saved_crashes++;
+  } else {
+    total_saved_positives++;
+  }
+}
+
+
+/* PacFuzz : We implemented a new function that separated with run_target
+   to run the valuation binary. The reason is that we don't want shared memories
+   being affected by the valuation binary. So we removed everything related to
+   forkserver and shared memories. */
+
+static u8 run_valuation_binary(char** argv, u32 timeout, char* env_opt) {
+
+  static struct itimerval it;
+  static u64 exec_ms = 0;
+
+  int status = 0;
+  u8 is_run_failed = 0;
+
+  child_timed_out = 0;
+  child_pid = fork();
+  
+  if (child_pid < 0) PFATAL("[PacFuzz] [run_valuation_binary] fork() failed");
+
+    if (!child_pid) {
+
+      struct rlimit r;
+
+      if (mem_limit) {
+
+        r.rlim_max = r.rlim_cur = ((rlim_t)mem_limit) << 20;
+
+#ifdef RLIMIT_AS
+
+        setrlimit(RLIMIT_AS, &r); /* Ignore errors */
+
+#else
+
+        setrlimit(RLIMIT_DATA, &r); /* Ignore errors */
+
+#endif /* ^RLIMIT_AS */
+
+      }
+
+      r.rlim_max = r.rlim_cur = 0;
+
+      setrlimit(RLIMIT_CORE, &r); /* Ignore errors */
+
+      /* Isolate the process and configure standard descriptors. If out_file is
+         specified, stdin is /dev/null; otherwise, out_fd is cloned instead. */
+
+      setsid();
+
+      dup2(dev_null_fd, 1);
+      dup2(dev_null_fd, 2);
+
+      if (out_file) {
+
+        dup2(dev_null_fd, 0);
+
+      } else {
+
+        dup2(out_fd, 0);
+        close(out_fd);
+
+      }
+
+      /* On Linux, would be faster to use O_CLOEXEC. Maybe TODO. */
+
+      close(dev_null_fd);
+      close(out_dir_fd);
+      close(dev_urandom_fd);
+      close(fileno(plot_file));
+
+      /* Set sane defaults for ASAN if nothing else specified. */
+
+      char *envp[] =
+      {
+          "ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0:symbolize=0:allocator_may_return_null=1",
+          "MSAN_OPTIONS=exit_code=86:halt_on_error=1:symbolize=0:msan_track_origins=0",
+          "UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:exit_code=54:print_stacktrace=1",
+          env_opt,
+          0
+      };
+
+      execve(argv[0], argv, envp);
+
+      /* Use a distinctive bitmap value to tell the parent about execv()
+         falling through. */
+
+      LOGF("[PacFuzz] [run_valuation_binary] execv() failed\n");
+      is_run_failed = 1;
+      exit(0);
+    }
+
+  /* Configure timeout, as requested by user, then wait for child to terminate. */
+
+  it.it_value.tv_sec = (timeout / 1000);
+  it.it_value.tv_usec = (timeout % 1000) * 1000;
+
+  setitimer(ITIMER_REAL, &it, NULL);
+
+  /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
+
+  if (waitpid(child_pid, &status, 0) <= 0) PFATAL("[PacFuzz] [run_valuation_binary] waitpid() failed");
+
+  if (!WIFSTOPPED(status)) child_pid = 0;
+
+  getitimer(ITIMER_REAL, &it);
+  exec_ms = (u64) timeout - (it.it_value.tv_sec * 1000 +
+                             it.it_value.tv_usec / 1000);
+
+  it.it_value.tv_sec = 0;
+  it.it_value.tv_usec = 0;
+
+  setitimer(ITIMER_REAL, &it, NULL);
+
+  total_execs++;
+
+  /* Report outcome to caller. */
+
+  if (WIFSIGNALED(status) && !stop_soon) {
+
+    kill_signal = WTERMSIG(status);
+
+    if (child_timed_out && kill_signal == SIGKILL) return FAULT_TMOUT;
+
+    return FAULT_CRASH;
+
+  }
+
+  /* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
+     must use a special exit code. */
+
+  if (uses_asan && WEXITSTATUS(status) == MSAN_ERROR) {
+    kill_signal = 0;
+    return FAULT_CRASH;
+  }
+
+  if (is_run_failed)
+    return FAULT_ERROR;
+
+  /* It makes sense to account for the slowest units only if the testcase was run
+  under the user defined timeout. */
+  if (!(timeout > exec_tmout) && (slowest_exec_ms < exec_ms)) {
+    slowest_exec_ms = exec_ms;
+  }
+
+  return FAULT_NONE;
+
+}
+
+/* PacFuzz: get valuation function */
+
+static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_hash, u8 **valuation_file) {
+
+  u8 *valexe = "";
+  u8 *covdir = "";
+  u8 *tmpfile = "";
+  u8 *tmpfile_env = "";
+  u8 fault_tmp;
+  u8 *tmp_argv1 = "";
+
+  *val_hash = 0;
+  *valuation_file = NULL;
+
+  if(!getenv("PACFIX_VAL_EXE")) return 0;
+  if(!getenv("PACFIX_COV_DIR")) return 0;
+
+  valexe = getenv("PACFIX_VAL_EXE");
+  covdir = getenv("PACFIX_COV_DIR");
+
+  tmpfile = alloc_printf((crashed ? "%s/__valuation_file_%llu" : "%s/__valuation_file_noncrash_%llu"), covdir, (crashed ? total_saved_crashes : total_saved_positives));
+  tmpfile_env = alloc_printf("PACFIX_FILENAME=%s", tmpfile);
+
+  // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
+  chmod(tmpfile,0777);
+  remove(tmpfile);
+
+  write_to_testcase(mem, len);
+
+  tmp_argv1 = argv[0];
+  argv[0] = valexe;
+  fault_tmp = run_valuation_binary(argv, 10000, tmpfile_env);
+  argv[0] = tmp_argv1;
+  ck_free(tmpfile_env);
+
+  // LOGF("[PacFuzz] [run_valuation] [run-completed] [fault %s] [time %llu]\n", fault_str[fault_tmp], get_cur_time() - start_time);
+
+  if (fault_tmp == FAULT_TMOUT || access(tmpfile, F_OK) != 0) {
+    LOGF("[PacFuzz] [run_valuation] [timeout %d] [no-file %d] [time %llu]\n", fault_tmp == FAULT_TMOUT, access(tmpfile, F_OK) != 0, get_cur_time() - start_time);
+    ck_free(tmpfile);
+    return 0;
+  }
+
+  u32 hash = hash_file(tmpfile);
+
+  // Check if the hash is already in the hash table
+
+  struct key_value_pair *kvp = hashmap_get(val_hashmap, hash);
+  if (kvp != NULL) {
+    LOGF("[PacFuzz] [run_valuation] [hash %u] [already-exist] [time %llu]\n", hash, get_cur_time() - start_time);
+    remove(tmpfile);
+    ck_free(tmpfile);
+    return 0;
+  }
+
+  // Add the hash to the hash table
+  hashmap_insert(val_hashmap, hash, NULL);
+
+  *valuation_file = tmpfile;
+  *val_hash = hash;
+  return 1;
+}
+
+static u8 get_valuation(char** argv, u8* use_mem, u32 len, u8 crashed) {
+  // Check current run is covering target line
+  if (check_target_covered()) {
+    LOGF("[PacFuzz] [get_valuation] [target-covered] [time %llu]\n", get_cur_time() - start_time);
+    u32 val_hash;
+    u8 *valuation_file;
+    u8 success = run_valuation(1, argv, use_mem, len, &val_hash, &valuation_file);
+    if (success) {
+      save_valuation(val_hash, valuation_file, crashed);
+    }
+
+    return success;
+  }
+
+  return 0;
+}
+
 void predict_clusters(u8 *out_file) {
 
   u64 clustering_start_time = get_cur_time();
@@ -3330,9 +3628,10 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   s32 fd;
   u8  keeping = 0, res;
   u64 prox_score;
+  u8 has_unique_memval = 0;
 
   if (check_valid_res(fault)) {
-
+    has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc());
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
 
@@ -3517,6 +3816,15 @@ keep_as_crash:
   close(fd);
 
   ck_free(fn);
+
+  if (has_unique_memval) {
+    fn = alloc_printf("%s/memory/input/%s", out_dir, basename(fn));
+    fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) PFATAL("Unable to create '%s'", fn);
+    ck_write(fd, mem, len, fn);
+    close(fd);
+    ck_free(fn);
+  }
 
   return keeping;
 
@@ -4024,6 +4332,23 @@ static void maybe_delete_out_dir(void) {
   }
 
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
+  ck_free(fn);
+
+
+  fn = alloc_printf("%s/memory/neg", out_dir);
+  if (delete_files(fn, NULL)) goto dir_cleanup_failed;
+  ck_free(fn);
+
+  fn = alloc_printf("%s/memory/pos", out_dir);
+  if (delete_files(fn, NULL)) goto dir_cleanup_failed;
+  ck_free(fn);
+
+  fn = alloc_printf("%s/memory/input", out_dir);
+  if (delete_files(fn, NULL)) goto dir_cleanup_failed;
+  ck_free(fn);
+
+  fn = alloc_printf("%s/memory", out_dir);
+  if (delete_files(fn, NULL)) goto dir_cleanup_failed;
   ck_free(fn);
 
   /* And now, for some finishing touches. */
@@ -7517,6 +7842,22 @@ EXP_ST void setup_dirs_fds(void) {
   if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
 
+  tmp = alloc_printf("%s/memory", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  tmp = alloc_printf("%s/memory/pos", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  tmp = alloc_printf("%s/memory/neg", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  tmp = alloc_printf("%s/memory/input", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
   /* Generally useful file descriptors. */
 
   dev_null_fd = open("/dev/null", O_RDWR);
@@ -8066,6 +8407,7 @@ void init_dfg(char *dfg_filename) {
     push_back(dfg_info_vector, node_info);
     if (score > max_score) {
       max_score = score;
+      dfg_target_idx = index;
     }
     index++;
   }
@@ -8355,6 +8697,7 @@ int main(int argc, char** argv) {
 
   queue_entry_id_vec = vector_create();
   queue_input_hash_map = hashmap_create(1024);
+  val_hashmap = hashmap_create(1024);
 
   if (sync_id) fix_up_sync();
 
