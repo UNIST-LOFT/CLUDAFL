@@ -118,7 +118,6 @@ struct list {
 };
 
 struct list_entry* list_entry_create(void *data) {
-  fprintf(stderr, "list_entry_create %d\n", data ? ((struct queue_entry *)data)->entry_id : -1);
   struct list_entry *entry = (struct list_entry *)ck_alloc(sizeof(struct list_entry));
   entry->data = data;
   entry->prev = NULL;
@@ -135,7 +134,6 @@ struct list* list_create(void) {
 }
 
 struct list_entry* list_insert_back(struct list *list, void *data) {
-  fprintf(stderr, "list_insert_back\n");
   struct list_entry *entry = list_entry_create(data);
   if (list->size == 0) {
     list->head = entry;
@@ -164,9 +162,6 @@ struct list_entry* list_insert_front(struct list *list, void *data) {
 }
 
 struct list_entry* list_insert_left(struct list *list, struct list_entry *entry_next, void *data) {
-  fprintf(stderr, "list_insert_left: list head %p tail %p size %d entry_next %p data %d\n",
-          list->head, list->tail, list->size, entry_next, data ? ((struct queue_entry *)data)->entry_id : -1
-  );
   if (entry_next == NULL) { // Insert at the front
     return list_insert_front(list, data);
   }
