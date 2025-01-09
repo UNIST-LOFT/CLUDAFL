@@ -5228,7 +5228,7 @@ struct queue_entry *select_next_cluster_dafl(void) {
       selected = le;
       clu->cur = le;
     } else {
-      return select_next_cluster_dafl(); // Handle the empty cluster
+      return select_next_dafl(); // Handle the empty cluster
     }
   }
   if (selected) {
