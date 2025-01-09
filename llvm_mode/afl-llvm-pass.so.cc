@@ -260,6 +260,14 @@ bool AFLCoverage::runOnModule(Module &M) {
                     ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
                 Instruction *nextInst = inst.getNextNonDebugInstruction();
+                if (!nextInst) {
+                  BasicBlock *BB = inst.getParent();
+                  nextInst = BB->getTerminator();
+                  if (!nextInst) {
+                    errs() << "Error: Block has no terminator!\n";
+                    return false;
+                  }
+                }
                 IRBuilder<> IRB1(nextInst);
                 LoadInst *HitMap1 = IRB1.CreateLoad(AFLMapHitPtr);
                 HitMap1->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
