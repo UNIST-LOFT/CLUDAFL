@@ -32,6 +32,12 @@ struct array {
   u32 *data;
 };
 
+struct mut_tracker {
+  u32 size;
+  struct array* inter; // Interesting
+  struct array* total; // Total
+};
+
 struct array *array_create(u32 size) {
   struct array *arr = (struct array *)ck_alloc(sizeof(struct array));
   arr->size = size;
@@ -69,6 +75,30 @@ u32 array_size(struct array *arr) {
   return arr->size;
 }
 
+struct mut_tracker *mut_tracker_create() {
+  struct mut_tracker *tracker = (struct mut_tracker *)ck_alloc(sizeof(struct mut_tracker));
+  tracker->size = 17;
+  tracker->inter = array_create(tracker->size);
+  tracker->total = array_create(tracker->size);
+  return tracker;
+}
+
+void mut_tracker_free(struct mut_tracker *tracker) {
+  array_free(tracker->inter);
+  array_free(tracker->total);
+  ck_free(tracker);
+}
+
+void mut_tracker_update(struct mut_tracker *tracker, u32 mut, u32 sel_num, u8 interesting) {
+  if (mut >= tracker->size) {
+    FATAL("Mutation index out of bounds: %u >= %u", mut, tracker->size);
+  }
+  if (interesting) {
+    tracker->inter->data[mut]++;
+  }
+  tracker->total->data[mut]++;
+}
+
 struct queue_entry {
 
   u8* fname;                          /* File name for the test case      */
@@ -101,6 +131,7 @@ struct queue_entry {
   u32 input_hash;
   u32 dfg_hash;
   struct array *dfg_arr;
+  struct mut_tracker *mut_tracker;
 
   struct queue_entry *next;           /* Next element, if any             */
 };
@@ -551,7 +582,7 @@ u32 cluster_add_child(struct cluster *cluster, struct queue_entry *entry) {
   // If the entry is the smallest (or list is empty), add it to the end
   if (!last_added_entry)
     last_added_entry = list_insert_back(cluster->cluster_nodes, entry);
-  print_list(cluster->id, cluster->cluster_nodes);
+  // print_list(cluster->id, cluster->cluster_nodes);
   if (!cluster->first_unhandled)
     cluster->first_unhandled = last_added_entry;
   return 1;

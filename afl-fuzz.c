@@ -292,6 +292,7 @@ static struct vector *queue_entry_id_vec = NULL; // vector<queue_entry *>, entry
 static struct hashmap *queue_input_hash_map = NULL; // map<input_hash, queue_entry *> for queue entry
 static struct cluster_manager *cluster_manager = NULL; // cluster manager
 static u8 *select_strategy = "dafl"; // strategy for selecting input. (dafl, random, random_cluster, dafl_cluster, default: dafl)
+static struct mut_tracker *mut_tracker_global = NULL; // global mut tracker
 
 static struct hashmap *val_hashmap = NULL;
 /* Fuzzing stages */
@@ -855,6 +856,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
   q->passed_det   = passed_det;
   q->prox_score   = prox_score;
   q->entry_id     = vector_size(queue_entry_id_vec) - 1;
+  q->mut_tracker  = mut_tracker_create();
 
   if (q->depth > max_depth) max_depth = q->depth;
 
@@ -5589,6 +5591,19 @@ struct queue_entry *select_next(void) {
   return NULL;
 }
 
+u32 select_mutator(struct queue_entry *q, u32 max_mutator) {
+  return UR(max_mutator);
+}
+
+void log_mutator(struct queue_entry *q, u32* mut_log) {
+  u8 was_interesting = 0; // Get 
+  for (u32 mut = 0; mut < 17; mut++) {
+    u32 sel_num = mut_log[mut];
+    mut_tracker_update(mut_tracker_global, mut, sel_num, was_interesting);
+    mut_tracker_update(q->mut_tracker, mut, sel_num, was_interesting);
+  }
+}
+
 /* Take the current entry from the queue, fuzz it for a while. This
    function is a tad too long... returns 0 if fuzzed successfully, 1 if
    skipped or bailed out. */
@@ -6758,6 +6773,9 @@ havoc_stage:
   /* We essentially just do several thousand runs (depending on perf_score)
      where we take the input file and make random stacked tweaks. */
 
+  u32 mut_log[17];
+  memset(mut_log, 0, sizeof(mut_log));
+
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
 
     u32 use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
@@ -6765,8 +6783,9 @@ havoc_stage:
     stage_cur_val = use_stacking;
 
     for (i = 0; i < use_stacking; i++) {
-
-      switch (UR(15 + ((extras_cnt + a_extras_cnt) ? 2 : 0))) {
+      u32 mut = select_mutator(queue_cur, 15 + ((extras_cnt + a_extras_cnt) ? 2 : 0));
+      u8 used = 1;
+      switch (mut) {
 
         case 0:
 
@@ -6786,7 +6805,7 @@ havoc_stage:
 
           /* Set word to interesting value, randomly choosing endian. */
 
-          if (temp_len < 2) break;
+          if (temp_len < 2) { used = 0; break; }
 
           if (UR(2)) {
 
@@ -6806,7 +6825,7 @@ havoc_stage:
 
           /* Set dword to interesting value, randomly choosing endian. */
 
-          if (temp_len < 4) break;
+          if (temp_len < 4) { used = 0; break; }
 
           if (UR(2)) {
 
@@ -6840,7 +6859,7 @@ havoc_stage:
 
           /* Randomly subtract from word, random endian. */
 
-          if (temp_len < 2) break;
+          if (temp_len < 2) { used = 0; break; }
 
           if (UR(2)) {
 
@@ -6864,7 +6883,7 @@ havoc_stage:
 
           /* Randomly add to word, random endian. */
 
-          if (temp_len < 2) break;
+          if (temp_len < 2) { used = 0; break; }
 
           if (UR(2)) {
 
@@ -6888,7 +6907,7 @@ havoc_stage:
 
           /* Randomly subtract from dword, random endian. */
 
-          if (temp_len < 4) break;
+          if (temp_len < 4) { used = 0; break; }
 
           if (UR(2)) {
 
@@ -6912,7 +6931,7 @@ havoc_stage:
 
           /* Randomly add to dword, random endian. */
 
-          if (temp_len < 4) break;
+          if (temp_len < 4) { used = 0; break; }
 
           if (UR(2)) {
 
@@ -6949,7 +6968,7 @@ havoc_stage:
 
             u32 del_from, del_len;
 
-            if (temp_len < 2) break;
+            if (temp_len < 2) { used = 0; break; }
 
             /* Don't delete too much. */
 
@@ -7023,7 +7042,7 @@ havoc_stage:
 
             u32 copy_from, copy_to, copy_len;
 
-            if (temp_len < 2) break;
+            if (temp_len < 2) { used = 0; break; }
 
             copy_len  = choose_block_len(temp_len - 1);
 
@@ -7058,7 +7077,7 @@ havoc_stage:
               u32 extra_len = a_extras[use_extra].len;
               u32 insert_at;
 
-              if (extra_len > temp_len) break;
+              if (extra_len > temp_len) { used = 0; break; }
 
               insert_at = UR(temp_len - extra_len + 1);
               memcpy(out_buf + insert_at, a_extras[use_extra].data, extra_len);
@@ -7071,7 +7090,7 @@ havoc_stage:
               u32 extra_len = extras[use_extra].len;
               u32 insert_at;
 
-              if (extra_len > temp_len) break;
+              if (extra_len > temp_len) { used = 0; break; }
 
               insert_at = UR(temp_len - extra_len + 1);
               memcpy(out_buf + insert_at, extras[use_extra].data, extra_len);
@@ -7095,7 +7114,7 @@ havoc_stage:
               use_extra = UR(a_extras_cnt);
               extra_len = a_extras[use_extra].len;
 
-              if (temp_len + extra_len >= MAX_FILE) break;
+              if (temp_len + extra_len >= MAX_FILE) { used = 0; break; }
 
               new_buf = ck_alloc_nozero(temp_len + extra_len);
 
@@ -7110,7 +7129,7 @@ havoc_stage:
               use_extra = UR(extras_cnt);
               extra_len = extras[use_extra].len;
 
-              if (temp_len + extra_len >= MAX_FILE) break;
+              if (temp_len + extra_len >= MAX_FILE) { used = 0; break; }
 
               new_buf = ck_alloc_nozero(temp_len + extra_len);
 
@@ -7136,10 +7155,15 @@ havoc_stage:
 
       }
 
+      if (used)
+        mut_log[mut]++;
     }
 
+    // Run the test case
     if (common_fuzz_stuff(argv, out_buf, temp_len))
       goto abandon_entry;
+
+    log_mutator(queue_cur, mut_log);
 
     /* out_buf might have been mangled a bit, so let's restore it to its
        original size and shape. */
@@ -8464,6 +8488,21 @@ void init_clusters() {
 
 #ifndef AFL_LIB
 
+
+static void init_cludafl() {
+  queue_entry_id_vec = vector_create();
+  queue_input_hash_map = hashmap_create(1024);
+  val_hashmap = hashmap_create(1024);
+  mut_tracker_global = mut_tracker_create();
+}
+
+static void destroy_cludafl() {
+  vector_free(queue_entry_id_vec);
+  hashmap_free(queue_input_hash_map);
+  hashmap_free(val_hashmap);
+  mut_tracker_free(mut_tracker_global);
+}
+
 /* Main entry point */
 
 int main(int argc, char** argv) {
@@ -8706,11 +8745,8 @@ int main(int argc, char** argv) {
   setup_signal_handlers();
   check_asan_opts();
 
-  queue_entry_id_vec = vector_create();
-  queue_input_hash_map = hashmap_create(1024);
-  val_hashmap = hashmap_create(1024);
-
   if (sync_id) fix_up_sync();
+  init_cludafl();
 
   if (!strcmp(in_dir, out_dir))
     FATAL("Input and output directories can't be the same");
@@ -8912,6 +8948,7 @@ stop_fuzzing:
   }
 
   fclose(plot_file);
+  destroy_cludafl();
   destroy_queue();
   destroy_extras();
   ck_free(target_path);
