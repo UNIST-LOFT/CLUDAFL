@@ -481,6 +481,18 @@ void hashmap_free(struct hashmap* map) {
   ck_free(map);
 }
 
+/* Multi-armed bandit stuffs */
+struct node_mutator {
+  u32 id;
+  u64 alpha;
+  u64 beta;
+};
+
+struct node_seed {
+  u8 *seed_id;
+  struct node_mutator *mutators;  // length: 17
+};
+
 // Cluster
 struct cluster {
   u32 id;
