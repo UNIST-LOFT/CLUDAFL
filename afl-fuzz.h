@@ -490,6 +490,8 @@ struct node_mutator {
 
 struct node_seed {
   u8 *seed_id;
+  u64 alpha;
+  u64 beta;
   struct node_mutator *mutators;  // length: 17
 };
 
