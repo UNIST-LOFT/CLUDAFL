@@ -2854,6 +2854,281 @@ static u8 is_crashed_at_target_loc() {
   return target_hit[0] == 1;
 }
 
+/* PacFuzz: file hash function */
+
+static u32 hash_file(u8 *filename) {
+
+  FILE *file = fopen(filename, "r");
+
+  if (!file) {
+    WARNF("Cannot open file %s", filename);
+    return 0;
+  }
+
+  fseek(file, 0, SEEK_END);
+  u64 length = ftell(file);
+  fseek(file, 0, SEEK_SET);
+
+  u64 max_read = 1 << 25; // 32MB
+  length = length < max_read ? length : max_read;
+
+  u8 *buf = ck_alloc_nozero(length);
+  fread(buf, 1, length, file);
+  fclose(file);
+
+  u32 hash = hash32(buf, length, HASH_CONST);
+  ck_free(buf);
+  return hash;
+
+}
+
+/* PacFuzz: save valuation function */
+
+static void save_valuation(u32 val_hash, u8 *valuation_file, u8 crashed) {
+  u8 *target_file = alloc_printf("memory/%s/id:%06llu", crashed ? "neg" : "pos",
+                                  crashed ? total_saved_crashes : total_saved_positives);
+  LOGF("[PacFuzz] [save_valuation] [%s] [seed %d] [entry %d] [id %llu] [hash %u] [time %llu] [file %s]\n", crashed == 1 ? "neg" : "pos", queue_cur ? queue_cur->entry_id : -1, queue_last ? queue_last->entry_id : -1,
+       crashed ? total_saved_crashes : total_saved_positives, val_hash, get_cur_time() - start_time, target_file);
+  u8 *target_file_full = alloc_printf("%s/%s", out_dir, target_file);
+  rename(valuation_file, target_file_full);
+  ck_free(valuation_file);
+  ck_free(target_file);
+  ck_free(target_file_full);
+  if (crashed) {
+    total_saved_crashes++;
+  } else {
+    total_saved_positives++;
+  }
+}
+
+
+/* PacFuzz : We implemented a new function that separated with run_target
+   to run the valuation binary. The reason is that we don't want shared memories
+   being affected by the valuation binary. So we removed everything related to
+   forkserver and shared memories. */
+
+static u8 run_valuation_binary(char** argv, u32 timeout, char* env_opt) {
+
+  static struct itimerval it;
+  static u64 exec_ms = 0;
+
+  int status = 0;
+  u8 is_run_failed = 0;
+
+  child_timed_out = 0;
+  child_pid = fork();
+  
+  if (child_pid < 0) PFATAL("[PacFuzz] [run_valuation_binary] fork() failed");
+
+    if (!child_pid) {
+
+      struct rlimit r;
+
+      if (mem_limit) {
+
+        r.rlim_max = r.rlim_cur = ((rlim_t)mem_limit) << 20;
+
+#ifdef RLIMIT_AS
+
+        setrlimit(RLIMIT_AS, &r); /* Ignore errors */
+
+#else
+
+        setrlimit(RLIMIT_DATA, &r); /* Ignore errors */
+
+#endif /* ^RLIMIT_AS */
+
+      }
+
+      r.rlim_max = r.rlim_cur = 0;
+
+      setrlimit(RLIMIT_CORE, &r); /* Ignore errors */
+
+      /* Isolate the process and configure standard descriptors. If out_file is
+         specified, stdin is /dev/null; otherwise, out_fd is cloned instead. */
+
+      setsid();
+
+      dup2(dev_null_fd, 1);
+      dup2(dev_null_fd, 2);
+
+      if (out_file) {
+
+        dup2(dev_null_fd, 0);
+
+      } else {
+
+        dup2(out_fd, 0);
+        close(out_fd);
+
+      }
+
+      /* On Linux, would be faster to use O_CLOEXEC. Maybe TODO. */
+
+      close(dev_null_fd);
+      close(out_dir_fd);
+      close(dev_urandom_fd);
+      close(fileno(plot_file));
+
+      /* Set sane defaults for ASAN if nothing else specified. */
+
+      char *envp[] =
+      {
+          "ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0:symbolize=0:allocator_may_return_null=1",
+          "MSAN_OPTIONS=exit_code=86:halt_on_error=1:symbolize=0:msan_track_origins=0",
+          "UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:exit_code=54:print_stacktrace=1",
+          env_opt,
+          0
+      };
+
+      execve(argv[0], argv, envp);
+
+      /* Use a distinctive bitmap value to tell the parent about execv()
+         falling through. */
+
+      LOGF("[PacFuzz] [run_valuation_binary] execv() failed\n");
+      is_run_failed = 1;
+      exit(0);
+    }
+
+  /* Configure timeout, as requested by user, then wait for child to terminate. */
+
+  it.it_value.tv_sec = (timeout / 1000);
+  it.it_value.tv_usec = (timeout % 1000) * 1000;
+
+  setitimer(ITIMER_REAL, &it, NULL);
+
+  /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
+
+  if (waitpid(child_pid, &status, 0) <= 0) PFATAL("[PacFuzz] [run_valuation_binary] waitpid() failed");
+
+  if (!WIFSTOPPED(status)) child_pid = 0;
+
+  getitimer(ITIMER_REAL, &it);
+  exec_ms = (u64) timeout - (it.it_value.tv_sec * 1000 +
+                             it.it_value.tv_usec / 1000);
+
+  it.it_value.tv_sec = 0;
+  it.it_value.tv_usec = 0;
+
+  setitimer(ITIMER_REAL, &it, NULL);
+
+  total_execs++;
+
+  /* Report outcome to caller. */
+
+  if (WIFSIGNALED(status) && !stop_soon) {
+
+    kill_signal = WTERMSIG(status);
+
+    if (child_timed_out && kill_signal == SIGKILL) return FAULT_TMOUT;
+
+    return FAULT_CRASH;
+
+  }
+
+  /* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
+     must use a special exit code. */
+
+  if (uses_asan && WEXITSTATUS(status) == MSAN_ERROR) {
+    kill_signal = 0;
+    return FAULT_CRASH;
+  }
+
+  if (is_run_failed)
+    return FAULT_ERROR;
+
+  /* It makes sense to account for the slowest units only if the testcase was run
+  under the user defined timeout. */
+  if (!(timeout > exec_tmout) && (slowest_exec_ms < exec_ms)) {
+    slowest_exec_ms = exec_ms;
+  }
+
+  return FAULT_NONE;
+
+}
+
+/* PacFuzz: get valuation function */
+
+static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_hash, u8 **valuation_file) {
+
+  u8 *valexe = "";
+  u8 *covdir = "";
+  u8 *tmpfile = "";
+  u8 *tmpfile_env = "";
+  u8 fault_tmp;
+  u8 *tmp_argv1 = "";
+
+  *val_hash = 0;
+  *valuation_file = NULL;
+
+  if(!getenv("PACFIX_VAL_EXE")) return 0;
+  if(!getenv("PACFIX_COV_DIR")) return 0;
+
+  valexe = getenv("PACFIX_VAL_EXE");
+  covdir = getenv("PACFIX_COV_DIR");
+
+  tmpfile = alloc_printf((crashed ? "%s/__valuation_file_%llu" : "%s/__valuation_file_noncrash_%llu"), covdir, (crashed ? total_saved_crashes : total_saved_positives));
+  tmpfile_env = alloc_printf("PACFIX_FILENAME=%s", tmpfile);
+
+  // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
+  chmod(tmpfile,0777);
+  remove(tmpfile);
+
+  write_to_testcase(mem, len);
+
+  tmp_argv1 = argv[0];
+  argv[0] = valexe;
+  fault_tmp = run_valuation_binary(argv, 10000, tmpfile_env);
+  argv[0] = tmp_argv1;
+  ck_free(tmpfile_env);
+
+  // LOGF("[PacFuzz] [run_valuation] [run-completed] [fault %s] [time %llu]\n", fault_str[fault_tmp], get_cur_time() - start_time);
+
+  if (fault_tmp == FAULT_TMOUT || access(tmpfile, F_OK) != 0) {
+    LOGF("[PacFuzz] [run_valuation] [timeout %d] [no-file %d] [time %llu]\n", fault_tmp == FAULT_TMOUT, access(tmpfile, F_OK) != 0, get_cur_time() - start_time);
+    ck_free(tmpfile);
+    return 0;
+  }
+
+  u32 hash = hash_file(tmpfile);
+
+  // Check if the hash is already in the hash table
+
+  struct key_value_pair *kvp = hashmap_get(val_hashmap, hash);
+  if (kvp != NULL) {
+    LOGF("[PacFuzz] [run_valuation] [hash %u] [already-exist] [time %llu]\n", hash, get_cur_time() - start_time);
+    remove(tmpfile);
+    ck_free(tmpfile);
+    return 0;
+  }
+
+  // Add the hash to the hash table
+  hashmap_insert(val_hashmap, hash, NULL);
+
+  *valuation_file = tmpfile;
+  *val_hash = hash;
+  return 1;
+}
+
+static u8 get_valuation(char** argv, u8* use_mem, u32 len, u8 crashed) {
+  // Check current run is covering target line
+  if (check_target_covered()) {
+    LOGF("[PacFuzz] [get_valuation] [target-covered] [time %llu]\n", get_cur_time() - start_time);
+    u32 val_hash;
+    u8 *valuation_file;
+    u8 success = run_valuation(1, argv, use_mem, len, &val_hash, &valuation_file);
+    if (success) {
+      save_valuation(val_hash, valuation_file, crashed);
+    }
+
+    return success;
+  }
+
+  return 0;
+}
+
+
 static char *array_print(struct array *arr) {
   if (!arr || arr->size == 0) {
     return strdup("");
@@ -2902,7 +3177,7 @@ static void perform_dry_run(char** argv) {
     u8  res;
     s32 fd;
 
-    u8* fn = strrchr(q->fname, '/') + 1;
+    u8 *fn = strrchr(q->fname, '/') + 1;
 
     ACTF("Attempting dry run with '%s'...", fn);
 
@@ -2920,6 +3195,15 @@ static void perform_dry_run(char** argv) {
     LOGF("[dry-run] [file %s] [hash %u] [dfg %u] [res %d] [prox %lld] [pre %lld]\n", q->fname, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
 
     save_dry_run(save_file, q, q->exec_us, res);
+    u8 has_unique_memval = get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc());
+    if (has_unique_memval) {
+      fn = alloc_printf("%s/memory/input/%s-%d", out_dir, res == FAULT_NONE ? "pos" : "neg", hashmap_size(val_hashmap));
+      fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+      if (fd < 0) PFATAL("Unable to create '%s'", fn);
+      ck_write(fd, use_mem, q->len, fn);
+      close(fd);
+      ck_free(fn);
+    }
 
     ck_free(use_mem);
 
@@ -2928,7 +3212,7 @@ static void perform_dry_run(char** argv) {
     if (res == crash_mode || res == FAULT_NOBITS)
       SAYF(cGRA "    len = %u, map size = %u, exec speed = %llu us\n" cRST,
            q->len, q->bitmap_size, q->exec_us);
-
+    fn = strrchr(q->fname, '/') + 1;
     switch (res) {
 
       case FAULT_NONE:
@@ -3312,280 +3596,6 @@ static void write_crash_readme(void) {
 
 }
 
-/* PacFuzz: file hash function */
-
-static u32 hash_file(u8 *filename) {
-
-  FILE *file = fopen(filename, "r");
-
-  if (!file) {
-    WARNF("Cannot open file %s", filename);
-    return 0;
-  }
-
-  fseek(file, 0, SEEK_END);
-  u64 length = ftell(file);
-  fseek(file, 0, SEEK_SET);
-
-  u64 max_read = 1 << 25; // 32MB
-  length = length < max_read ? length : max_read;
-
-  u8 *buf = ck_alloc_nozero(length);
-  fread(buf, 1, length, file);
-  fclose(file);
-
-  u32 hash = hash32(buf, length, HASH_CONST);
-  ck_free(buf);
-  return hash;
-
-}
-
-/* PacFuzz: save valuation function */
-
-static void save_valuation(u32 val_hash, u8 *valuation_file, u8 crashed) {
-  u8 *target_file = alloc_printf("memory/%s/id:%06llu", crashed ? "neg" : "pos",
-                                  crashed ? total_saved_crashes : total_saved_positives);
-  LOGF("[PacFuzz] [save_valuation] [%s] [seed %d] [entry %d] [id %llu] [hash %u] [time %llu] [file %s]\n", crashed == 1 ? "neg" : "pos", queue_cur ? queue_cur->entry_id : -1, queue_last ? queue_last->entry_id : -1,
-       crashed ? total_saved_crashes : total_saved_positives, val_hash, get_cur_time() - start_time, target_file);
-  u8 *target_file_full = alloc_printf("%s/%s", out_dir, target_file);
-  rename(valuation_file, target_file_full);
-  ck_free(valuation_file);
-  ck_free(target_file);
-  ck_free(target_file_full);
-  if (crashed) {
-    total_saved_crashes++;
-  } else {
-    total_saved_positives++;
-  }
-}
-
-
-/* PacFuzz : We implemented a new function that separated with run_target
-   to run the valuation binary. The reason is that we don't want shared memories
-   being affected by the valuation binary. So we removed everything related to
-   forkserver and shared memories. */
-
-static u8 run_valuation_binary(char** argv, u32 timeout, char* env_opt) {
-
-  static struct itimerval it;
-  static u64 exec_ms = 0;
-
-  int status = 0;
-  u8 is_run_failed = 0;
-
-  child_timed_out = 0;
-  child_pid = fork();
-  
-  if (child_pid < 0) PFATAL("[PacFuzz] [run_valuation_binary] fork() failed");
-
-    if (!child_pid) {
-
-      struct rlimit r;
-
-      if (mem_limit) {
-
-        r.rlim_max = r.rlim_cur = ((rlim_t)mem_limit) << 20;
-
-#ifdef RLIMIT_AS
-
-        setrlimit(RLIMIT_AS, &r); /* Ignore errors */
-
-#else
-
-        setrlimit(RLIMIT_DATA, &r); /* Ignore errors */
-
-#endif /* ^RLIMIT_AS */
-
-      }
-
-      r.rlim_max = r.rlim_cur = 0;
-
-      setrlimit(RLIMIT_CORE, &r); /* Ignore errors */
-
-      /* Isolate the process and configure standard descriptors. If out_file is
-         specified, stdin is /dev/null; otherwise, out_fd is cloned instead. */
-
-      setsid();
-
-      dup2(dev_null_fd, 1);
-      dup2(dev_null_fd, 2);
-
-      if (out_file) {
-
-        dup2(dev_null_fd, 0);
-
-      } else {
-
-        dup2(out_fd, 0);
-        close(out_fd);
-
-      }
-
-      /* On Linux, would be faster to use O_CLOEXEC. Maybe TODO. */
-
-      close(dev_null_fd);
-      close(out_dir_fd);
-      close(dev_urandom_fd);
-      close(fileno(plot_file));
-
-      /* Set sane defaults for ASAN if nothing else specified. */
-
-      char *envp[] =
-      {
-          "ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0:symbolize=0:allocator_may_return_null=1",
-          "MSAN_OPTIONS=exit_code=86:halt_on_error=1:symbolize=0:msan_track_origins=0",
-          "UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:exit_code=54:print_stacktrace=1",
-          env_opt,
-          0
-      };
-
-      execve(argv[0], argv, envp);
-
-      /* Use a distinctive bitmap value to tell the parent about execv()
-         falling through. */
-
-      LOGF("[PacFuzz] [run_valuation_binary] execv() failed\n");
-      is_run_failed = 1;
-      exit(0);
-    }
-
-  /* Configure timeout, as requested by user, then wait for child to terminate. */
-
-  it.it_value.tv_sec = (timeout / 1000);
-  it.it_value.tv_usec = (timeout % 1000) * 1000;
-
-  setitimer(ITIMER_REAL, &it, NULL);
-
-  /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
-
-  if (waitpid(child_pid, &status, 0) <= 0) PFATAL("[PacFuzz] [run_valuation_binary] waitpid() failed");
-
-  if (!WIFSTOPPED(status)) child_pid = 0;
-
-  getitimer(ITIMER_REAL, &it);
-  exec_ms = (u64) timeout - (it.it_value.tv_sec * 1000 +
-                             it.it_value.tv_usec / 1000);
-
-  it.it_value.tv_sec = 0;
-  it.it_value.tv_usec = 0;
-
-  setitimer(ITIMER_REAL, &it, NULL);
-
-  total_execs++;
-
-  /* Report outcome to caller. */
-
-  if (WIFSIGNALED(status) && !stop_soon) {
-
-    kill_signal = WTERMSIG(status);
-
-    if (child_timed_out && kill_signal == SIGKILL) return FAULT_TMOUT;
-
-    return FAULT_CRASH;
-
-  }
-
-  /* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
-     must use a special exit code. */
-
-  if (uses_asan && WEXITSTATUS(status) == MSAN_ERROR) {
-    kill_signal = 0;
-    return FAULT_CRASH;
-  }
-
-  if (is_run_failed)
-    return FAULT_ERROR;
-
-  /* It makes sense to account for the slowest units only if the testcase was run
-  under the user defined timeout. */
-  if (!(timeout > exec_tmout) && (slowest_exec_ms < exec_ms)) {
-    slowest_exec_ms = exec_ms;
-  }
-
-  return FAULT_NONE;
-
-}
-
-/* PacFuzz: get valuation function */
-
-static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_hash, u8 **valuation_file) {
-
-  u8 *valexe = "";
-  u8 *covdir = "";
-  u8 *tmpfile = "";
-  u8 *tmpfile_env = "";
-  u8 fault_tmp;
-  u8 *tmp_argv1 = "";
-
-  *val_hash = 0;
-  *valuation_file = NULL;
-
-  if(!getenv("PACFIX_VAL_EXE")) return 0;
-  if(!getenv("PACFIX_COV_DIR")) return 0;
-
-  valexe = getenv("PACFIX_VAL_EXE");
-  covdir = getenv("PACFIX_COV_DIR");
-
-  tmpfile = alloc_printf((crashed ? "%s/__valuation_file_%llu" : "%s/__valuation_file_noncrash_%llu"), covdir, (crashed ? total_saved_crashes : total_saved_positives));
-  tmpfile_env = alloc_printf("PACFIX_FILENAME=%s", tmpfile);
-
-  // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
-  chmod(tmpfile,0777);
-  remove(tmpfile);
-
-  write_to_testcase(mem, len);
-
-  tmp_argv1 = argv[0];
-  argv[0] = valexe;
-  fault_tmp = run_valuation_binary(argv, 10000, tmpfile_env);
-  argv[0] = tmp_argv1;
-  ck_free(tmpfile_env);
-
-  // LOGF("[PacFuzz] [run_valuation] [run-completed] [fault %s] [time %llu]\n", fault_str[fault_tmp], get_cur_time() - start_time);
-
-  if (fault_tmp == FAULT_TMOUT || access(tmpfile, F_OK) != 0) {
-    LOGF("[PacFuzz] [run_valuation] [timeout %d] [no-file %d] [time %llu]\n", fault_tmp == FAULT_TMOUT, access(tmpfile, F_OK) != 0, get_cur_time() - start_time);
-    ck_free(tmpfile);
-    return 0;
-  }
-
-  u32 hash = hash_file(tmpfile);
-
-  // Check if the hash is already in the hash table
-
-  struct key_value_pair *kvp = hashmap_get(val_hashmap, hash);
-  if (kvp != NULL) {
-    LOGF("[PacFuzz] [run_valuation] [hash %u] [already-exist] [time %llu]\n", hash, get_cur_time() - start_time);
-    remove(tmpfile);
-    ck_free(tmpfile);
-    return 0;
-  }
-
-  // Add the hash to the hash table
-  hashmap_insert(val_hashmap, hash, NULL);
-
-  *valuation_file = tmpfile;
-  *val_hash = hash;
-  return 1;
-}
-
-static u8 get_valuation(char** argv, u8* use_mem, u32 len, u8 crashed) {
-  // Check current run is covering target line
-  if (check_target_covered()) {
-    LOGF("[PacFuzz] [get_valuation] [target-covered] [time %llu]\n", get_cur_time() - start_time);
-    u32 val_hash;
-    u8 *valuation_file;
-    u8 success = run_valuation(1, argv, use_mem, len, &val_hash, &valuation_file);
-    if (success) {
-      save_valuation(val_hash, valuation_file, crashed);
-    }
-
-    return success;
-  }
-
-  return 0;
-}
-
 void predict_clusters(u8 *out_file) {
 
   u64 clustering_start_time = get_cur_time();
@@ -3632,9 +3642,16 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
   if (check_valid_res(fault)) {
     has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc());
+    if (has_unique_memval) {
+      fn = alloc_printf("%s/memory/input/%s-%d", out_dir, fault == 0 ? "pos" : "neg", hashmap_size(val_hashmap));
+      fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+      if (fd < 0) PFATAL("Unable to create '%s'", fn);
+      ck_write(fd, mem, len, fn);
+      close(fd);
+      ck_free(fn);
+    }
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
-
     if (!(hnb = has_new_bits(virgin_bits))) {
       if (crash_mode) total_crashes++;
       return 0;
@@ -3816,15 +3833,6 @@ keep_as_crash:
   close(fd);
 
   ck_free(fn);
-
-  if (has_unique_memval) {
-    fn = alloc_printf("%s/memory/input/%s", out_dir, basename(fn));
-    fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (fd < 0) PFATAL("Unable to create '%s'", fn);
-    ck_write(fd, mem, len, fn);
-    close(fd);
-    ck_free(fn);
-  }
 
   return keeping;
 
