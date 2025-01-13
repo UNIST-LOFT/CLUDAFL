@@ -3683,14 +3683,17 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
        successful. */
 
     res = calibrate_case(argv, queue_last, mem, queue_cycle - 1, 0);
-    // CLUDAFL: Save run results - this should be done after calibration
-    u8* save_filename = alloc_printf("%s/results.sbsv", out_dir);
-    FILE *save_file = fopen(save_filename, "w");
-    save_dry_run(save_file, queue_last, queue_last->exec_us, fault);
-    fclose(save_file);
 
-    predict_clusters(save_filename);
-    ck_free(save_filename);
+    if (strcmp(select_strategy,"dafl_cluster")==0 || strcmp(select_strategy,"random_cluster")==0) {
+      // CLUDAFL: Save run results - this should be done after calibration
+      u8* save_filename = alloc_printf("%s/results.sbsv", out_dir);
+      FILE *save_file = fopen(save_filename, "w");
+      save_dry_run(save_file, queue_last, queue_last->exec_us, fault);
+      fclose(save_file);
+
+      predict_clusters(save_filename);
+      ck_free(save_filename);
+    }
 
     if (res == FAULT_ERROR)
       FATAL("Unable to execute target application");
@@ -8788,7 +8791,7 @@ int main(int argc, char** argv) {
   if (run_only_dry_run) {
     OKF("Dry run finished, exiting.");
     exit(0);
-  } else {
+  } else if (strcmp(select_strategy, "dafl_cluster") == 0 || strcmp(select_strategy, "random_cluster") == 0) {
     init_clusters();
   }
 
