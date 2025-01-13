@@ -492,8 +492,24 @@ struct node_seed {
   u8 *seed_id;
   u64 alpha;
   u64 beta;
-  struct node_mutator *mutators;  // length: 17
+  struct node_mutator **mutators;  // length: 17
 };
+
+struct node_seed *create_seed_node(u8 *seed_id) {
+  struct node_seed *node = (struct node_seed *)ck_alloc(sizeof(struct node_seed));
+  node->seed_id = seed_id;
+  node->alpha = 1;
+  node->beta = 1;
+  node->mutators = (struct node_mutator *)ck_alloc(17 * sizeof(struct node_mutator*));
+  for (u32 i = 0; i < 17; i++) {
+    struct node_mutator *mutator = (struct node_mutator *)ck_alloc(sizeof(struct node_mutator));
+    mutator->id = i;
+    mutator->alpha = 1;
+    mutator->beta = 1;
+    node->mutators[i] = mutator;
+  }
+  return node;
+}
 
 // Cluster
 struct cluster {
