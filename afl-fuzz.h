@@ -512,6 +512,96 @@ void hashmap_free(struct hashmap* map) {
   ck_free(map);
 }
 
+/* Multi-armed bandit stuffs */
+struct node_mutator {
+  u32 id;
+  u64 alpha;
+  u64 beta;
+};
+
+struct node_seed {
+  u8 *seed_id;
+  u64 alpha;
+  u64 beta;
+  struct node_mutator **mutators;  // length: 17
+};
+
+u32 selected_stage_max=1;
+u32 selected_use_stacking=1;
+u8 selected_mutators[0x100*100];
+
+/**
+ * Initialize a single seed node
+ */
+struct node_seed *create_seed_node(u8 *seed_id) {
+  struct node_seed *node = (struct node_seed *)ck_alloc(sizeof(struct node_seed));
+  node->seed_id = seed_id;
+  node->alpha = 1;
+  node->beta = 1;
+  node->mutators = (struct node_mutator *)ck_alloc(17 * sizeof(struct node_mutator*));
+  for (u32 i = 0; i < 17; i++) {
+    struct node_mutator *mutator = (struct node_mutator *)ck_alloc(sizeof(struct node_mutator));
+    mutator->id = i;
+    mutator->alpha = 1;
+    mutator->beta = 1;
+    node->mutators[i] = mutator;
+  }
+  return node;
+}
+
+/**
+ * Select a single mutator
+ */
+u8 select_mutator(struct node_seed* input_node) {
+  double max_score=0.;
+  u32 selected_mutator=0;
+  for (u32 i = 0; i < 17; i++) {
+    // TODO: Implement Beta distribution RNG
+    double score = (double)input_node->mutators[i]->alpha / (double)(input_node->mutators[i]->alpha + input_node->mutators[i]->beta);
+    if (score > max_score) {
+      max_score = score;
+      selected_mutator = i;
+    }
+  }
+  return selected_mutator;
+}
+
+/**
+ * Decide whether to continue mutation. If max_stage_max is reached, always return 0.
+ */
+u8 decide_continue_mutation(u32 max_stage_max) {
+  if (selected_stage_max >= max_stage_max) return 0;
+  return UR(2); // Randomly decide to continue mutation
+}
+
+/**
+ * Select input and mutators.
+ * 
+ * Updates selected_use_stacking randomly based on default DAFL.
+ * Updates selected_stage_max with decision heuristics.
+ * Updates selected_mutators with selected mutators with multi-armed bandit.
+ * 
+ * The size of selected_mutators is selected_use_stacking * selected_stage_max.
+ */
+void select_input_and_mutators(struct node_seed *input_node, u32 max_stage_max) {
+  // Decide use_stacking
+  selected_use_stacking=1 << (1 + UR(HAVOC_STACK_POW2));
+  selected_stage_max=1;
+
+  // Select first mutator
+  for (u32 i = 0; i < selected_use_stacking; i++) {
+    selected_mutators[i] = select_mutator(input_node);
+  }
+
+  // Continue mutation
+  while (decide_continue_mutation(max_stage_max)) {
+    for (u32 i = 0; i < selected_use_stacking; i++) {
+      selected_mutators[(selected_stage_max*selected_use_stacking)+i] = select_mutator(input_node);
+    }
+    selected_stage_max++;
+  }
+}
+
 // Cluster
 struct cluster {
   u32 id;
