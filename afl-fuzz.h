@@ -92,8 +92,8 @@ u64 array_size(struct array *arr) {
  */
 struct mut_tracker {
   u32 size;
-  u32 inter_num;
-  u32 total_num;
+  u64 inter_num;
+  u64 total_num;
   struct array *inter; // Interesting
   struct array *total; // Total
 };
