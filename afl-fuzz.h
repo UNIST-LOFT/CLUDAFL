@@ -8,8 +8,10 @@
 #include "debug.h"
 #include "alloc-inl.h"
 #include <math.h>
+#ifdef USE_GSL
 #include <gsl/gsl_rng.h>
 #include <gsl/gsl_randist.h>
+#endif
 
 // For interval tree: should be power of 2
 #define INTERVAL_SIZE 1024
@@ -160,6 +162,7 @@ double beta_rand_mt(struct beta_dist dist) {
   return x / (x + y);
 }
 
+#ifdef USE_GSL
 /**
  * Samples a random number from beta distribution with GSL library.
  * 
@@ -180,6 +183,11 @@ double beta_rand_gsl(struct beta_dist dist) {
 
   return sample;
 }
+#else
+double beta_rand_gsl(struct beta_dist dist) {
+  return beta_rand_mt(dist);
+}
+#endif
 
 struct mut_tracker *mut_tracker_create() {
   struct mut_tracker *tracker = (struct mut_tracker *)ck_alloc(sizeof(struct mut_tracker));
