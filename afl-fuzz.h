@@ -8,6 +8,10 @@
 #include "debug.h"
 #include "alloc-inl.h"
 #include <math.h>
+#ifdef USE_GSL
+#include <gsl/gsl_rng.h>
+#include <gsl/gsl_randist.h>
+#endif
 
 // For interval tree: should be power of 2
 #define INTERVAL_SIZE 1024
@@ -38,20 +42,6 @@ struct dfg_node_info {
 struct array {
   u64 size;
   u64 *data;
-};
-
-struct mut_tracker {
-  u32 size;
-  u64 inter_num;
-  u64 total_num;
-  struct array *inter; // Interesting
-  struct array* total; // Total
-};
-
-/* Multi-armed bandit stuffs */
-struct beta_dist {
-  double alpha;
-  double beta;
 };
 
 struct array *array_create(u64 size) {
@@ -92,6 +82,26 @@ void array_copy(struct array *dst, u32 *src, u64 size) {
 u64 array_size(struct array *arr) {
   return arr->size;
 }
+
+/* Multi-armed bandit stuffs */
+
+/**
+ * Multi-armed bandit (MAB) structure.
+ * 
+ * It contains interesting and total inputs.
+ */
+struct mut_tracker {
+  u32 size;
+  u32 inter_num;
+  u32 total_num;
+  struct array *inter; // Interesting
+  struct array *total; // Total
+};
+
+struct beta_dist {
+  double alpha;
+  double beta;
+};
 
 /**
  * Generate a random number from gamma distribution used by beta distribution.
@@ -138,6 +148,32 @@ double beta_rand_mt(struct beta_dist dist) {
   return x / (x + y);
 }
 
+#ifdef USE_GSL
+/**
+ * Samples a random number from beta distribution with GSL library.
+ * 
+ * This function calls gsl_ran_beta function from GSL library.
+ */
+double beta_rand_gsl(struct beta_dist dist) {
+  const gsl_rng_type * T;
+  gsl_rng * r;
+
+  gsl_rng_env_setup();
+
+  T = gsl_rng_default;
+  r = gsl_rng_alloc(T);
+
+  double sample = gsl_ran_beta(r, dist.alpha, dist.beta);
+
+  gsl_rng_free(r);
+
+  return sample;
+}
+#else
+double beta_rand_gsl(struct beta_dist dist) {
+  return beta_rand_mt(dist);
+}
+#endif
 
 struct mut_tracker *mut_tracker_create() {
   struct mut_tracker *tracker = (struct mut_tracker *)ck_alloc(sizeof(struct mut_tracker));
@@ -166,6 +202,9 @@ void mut_tracker_update(struct mut_tracker *tracker, u32 mut, u32 sel_num, u8 in
   tracker->total_num += sel_num;
 }
 
+/**
+ * Get the beta dist. of the input
+ */
 struct beta_dist mut_tracker_get(struct mut_tracker *tracker) {
   struct beta_dist dist;
   dist.alpha = (double)(tracker->inter_num + 2);
@@ -173,6 +212,9 @@ struct beta_dist mut_tracker_get(struct mut_tracker *tracker) {
   return dist;
 }
 
+/**
+ * Get the beta dist. of the mutator
+ */
 struct beta_dist mut_tracker_get_mut(struct mut_tracker *tracker, u32 mut) {
   struct beta_dist dist;
   dist.alpha = (double)(tracker->inter->data[mut] + 2);
@@ -184,6 +226,10 @@ double beta_mode(struct beta_dist dist) {
   return (dist.alpha - 1.0) / (dist.alpha + dist.beta - 2.0);
 }
 
+/**
+ * Update the beta distribution.
+ * Update the beta value with simple heuristic to prevent the extreme cases (i.e. beta_mode() >= 1.0).
+ */
 struct beta_dist beta_dist_update(struct beta_dist src, struct beta_dist global) {
   struct beta_dist dist;
   // Adjust the alpha and beta values based on update
