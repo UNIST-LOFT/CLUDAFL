@@ -188,7 +188,7 @@ struct beta_dist beta_dist_update(struct beta_dist src, struct beta_dist global)
   struct beta_dist dist;
   // Adjust the alpha and beta values based on update
   dist.alpha = src.alpha;
-  dist.beta = src.beta * global.alpha / global.beta;
+  dist.beta = ((src.beta - 2) * global.alpha / global.beta) + 2;
   return dist;
 }
 

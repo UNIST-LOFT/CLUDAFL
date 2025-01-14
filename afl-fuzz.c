@@ -341,6 +341,7 @@ enum {
 #define LOGF(x...) do { \
     if (unique_dafl_log_file) { \
       fprintf(unique_dafl_log_file, x); \
+      fflush(unique_dafl_log_file); \
     } \
   } while (0)
 
@@ -5807,6 +5808,9 @@ static u8 fuzz_one(char** argv) {
    *********************/
 
   orig_perf = perf_score = calculate_score(queue_cur);
+  LOGF("[sel] [entry %d] [perf %d] [inter %lld] [total %lld] [time %llu]\n", queue_cur->entry_id, perf_score, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
+  ACTF("[sel] [entry %d] [perf %d] [inter %lld] [total %lld] [time %llu]", queue_cur->entry_id, perf_score, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
+
 
   /* Skip right away if -d is given, if we have done deterministic fuzzing on
      this entry ourselves (was_fuzzed), or if it has gone through deterministic
@@ -6819,8 +6823,6 @@ havoc_stage:
   }
 
   if (stage_max < HAVOC_MIN) stage_max = HAVOC_MIN;
-  LOGF("[sel] [entry %d] [sm %d] [inter %lld] [total %lld] [time %llu]\n", queue_cur->entry_id, stage_max, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
-  ACTF("[sel] [entry %d] [sm %d] [inter %lld] [total %lld] [time %llu]", queue_cur->entry_id, stage_max, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
 
   temp_len = len;
 
@@ -6832,9 +6834,9 @@ havoc_stage:
      where we take the input file and make random stacked tweaks. */
 
   u32 mut_log[17];
-  memset(mut_log, 0, sizeof(mut_log));
 
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
+    memset(mut_log, 0, sizeof(mut_log));
 
     u32 use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
 
