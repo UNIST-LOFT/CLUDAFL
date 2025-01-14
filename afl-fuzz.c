@@ -3140,7 +3140,7 @@ static char *array_print(struct array *arr) {
     return strdup("");
   }
 
-  u32 size = 12 * arr->size; // Preallocate enough space for each u32 and commas
+  u32 size = 12 * arr->size; // Preallocate enough space for each score and commas
   char *str = ck_alloc(size + 1);
   if (!str) {
     FATAL("Memory allocation failed");
@@ -3148,7 +3148,7 @@ static char *array_print(struct array *arr) {
 
   char *ptr = str;
   for (u32 i = 0; i < arr->size; i++) {
-    ptr += sprintf(ptr, "%u,", array_get(arr, i));
+    ptr += sprintf(ptr, "%llu,", array_get(arr, i));
   }
   *ptr = '\0'; // Null-terminate the string
   return str;
@@ -3653,7 +3653,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     if (has_unique_memval) {
       fn = alloc_printf("%s/memory/input/%s-%d", out_dir, fault == 0 ? "pos" : "neg", hashmap_size(val_hashmap));
       fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
-      LOGF("[PacFuzz] [save_if_interesting] [seed %d] [inter %u] [total %u] [time %llu]\n", queue_cur ? queue_cur->entry_id : -1, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
+      LOGF("[PacFuzz] [save_if_interesting] [seed %d] [inter %llu] [total %llu] [time %llu]\n", queue_cur ? queue_cur->entry_id : -1, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
       if (fd < 0) PFATAL("Unable to create '%s'", fn);
       ck_write(fd, mem, len, fn);
       close(fd);
@@ -6819,6 +6819,8 @@ havoc_stage:
   }
 
   if (stage_max < HAVOC_MIN) stage_max = HAVOC_MIN;
+  LOGF("[sel] [entry %d] [sm %d] [inter %lld] [total %lld] [time %llu]\n", queue_cur->entry_id, stage_max, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
+  ACTF("[sel] [entry %d] [sm %d] [inter %lld] [total %lld] [time %llu]", queue_cur->entry_id, stage_max, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
 
   temp_len = len;
 

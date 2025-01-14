@@ -35,14 +35,14 @@ struct dfg_node_info {
 };
 
 struct array {
-  u32 size;
-  u32 *data;
+  u64 size;
+  u64 *data;
 };
 
 struct mut_tracker {
   u32 size;
-  u32 inter_num;
-  u32 total_num;
+  u64 inter_num;
+  u64 total_num;
   struct array *inter; // Interesting
   struct array* total; // Total
 };
@@ -53,10 +53,10 @@ struct beta_dist {
   double beta;
 };
 
-struct array *array_create(u32 size) {
+struct array *array_create(u64 size) {
   struct array *arr = (struct array *)ck_alloc(sizeof(struct array));
   arr->size = size;
-  arr->data = (u32 *)ck_alloc(size * sizeof(u32));
+  arr->data = (u64 *)ck_alloc(size * sizeof(u64));
   return arr;
 }
 
@@ -65,28 +65,30 @@ void array_free(struct array *arr) {
   ck_free(arr);
 }
 
-void array_set(struct array *arr, u32 index, u32 value) {
+void array_set(struct array *arr, u64 index, u64 value) {
   if (index >= arr->size) {
-    FATAL("Index out of bounds: %u >= %u", index, arr->size);
+    FATAL("Index out of bounds: %llu >= %llu", index, arr->size);
   }
   arr->data[index] = value;
 }
 
-u32 array_get(struct array *arr, u32 index) {
+u64 array_get(struct array *arr, u64 index) {
   if (index >= arr->size) {
-    FATAL("Index out of bounds: %u >= %u", index, arr->size);
+    FATAL("Index out of bounds: %llu >= %llu", index, arr->size);
   }
   return arr->data[index];
 }
 
-void array_copy(struct array *dst, u32 *src, u32 size) {
+void array_copy(struct array *dst, u32 *src, u64 size) {
   if (dst->size < size) {
-    FATAL("Destination array is too small: %u < %u", dst->size, size);
+    FATAL("Destination array is too small: %llu < %llu", dst->size, size);
   }
-  memcpy(dst->data, src, size * sizeof(u32));
+  for (u64 i = 0; i < size; i++) {
+    dst->data[i] = (u64)src[i];
+  }
 }
 
-u32 array_size(struct array *arr) {
+u64 array_size(struct array *arr) {
   return arr->size;
 }
 
