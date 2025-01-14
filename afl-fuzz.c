@@ -287,6 +287,7 @@ static struct vector *dfg_info_vector = NULL; // vector<struct dfg_node_info *> 
 
 static struct vector *queue_entry_id_vec = NULL; // vector<queue_entry *>, entry_id is index
 static struct hashmap *queue_input_hash_map = NULL; // map<input_hash, queue_entry *> for queue entry
+static struct hashmap *dfg_hash_map = NULL; // map<dfg_hash, queue_entry *> for queue entry
 static struct cluster_manager *cluster_manager = NULL; // cluster manager
 enum selection_strategy select_strategy = SELECT_DAFL; // strategy for selecting input. (dafl, random, random_cluster, dafl_cluster, default: dafl)
 static struct mut_tracker *mut_tracker_global = NULL; // global mut tracker
@@ -907,6 +908,16 @@ EXP_ST void destroy_queue(void) {
 
   }
 
+}
+
+u32 max_dfg_score() {
+  u32 max_score = 0;
+  for (u32 i = 0; i < vector_size(dfg_info_vector); i++) {
+    if (dfg_bits[i] > max_score) {
+      max_score = dfg_bits[i];
+    }
+  }
+  return max_score;
 }
 
 
@@ -2717,6 +2728,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     if (q->dfg_hash == 0) {
       q->dfg_hash = hash32(dfg_bits, sizeof(u32) * DFG_MAP_SIZE, HASH_CONST);
       q->dfg_arr = array_create(vector_size(dfg_info_vector));
+      q->dfg_max = max_dfg_score();
       array_copy(q->dfg_arr, dfg_bits, vector_size(dfg_info_vector));
     }
     
@@ -3083,7 +3095,6 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
   // LOGF("[PacFuzz] [run_valuation] [run-completed] [fault %s] [time %llu]\n", fault_str[fault_tmp], get_cur_time() - start_time);
 
   if (fault_tmp == FAULT_TMOUT || access(tmpfile, F_OK) != 0) {
-    LOGF("[PacFuzz] [run_valuation] [timeout %d] [no-file %d] [time %llu]\n", fault_tmp == FAULT_TMOUT, access(tmpfile, F_OK) != 0, get_cur_time() - start_time);
     ck_free(tmpfile);
     return 0;
   }
@@ -3094,7 +3105,6 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
 
   struct key_value_pair *kvp = hashmap_get(val_hashmap, hash);
   if (kvp != NULL) {
-    LOGF("[PacFuzz] [run_valuation] [hash %u] [already-exist] [time %llu]\n", hash, get_cur_time() - start_time);
     remove(tmpfile);
     ck_free(tmpfile);
     return 0;
@@ -3111,7 +3121,6 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
 static u8 get_valuation(char** argv, u8* use_mem, u32 len, u8 crashed) {
   // Check current run is covering target line
   if (check_target_covered()) {
-    LOGF("[PacFuzz] [get_valuation] [target-covered] [time %llu]\n", get_cur_time() - start_time);
     u32 val_hash;
     u8 *valuation_file;
     u8 success = run_valuation(1, argv, use_mem, len, &val_hash, &valuation_file);
@@ -3644,10 +3653,15 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     if (has_unique_memval) {
       fn = alloc_printf("%s/memory/input/%s-%d", out_dir, fault == 0 ? "pos" : "neg", hashmap_size(val_hashmap));
       fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+      LOGF("[PacFuzz] [save_if_interesting] [seed %d] [inter %u] [total %u] [time %llu]\n", queue_cur ? queue_cur->entry_id : -1, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
       if (fd < 0) PFATAL("Unable to create '%s'", fn);
       ck_write(fd, mem, len, fn);
       close(fd);
       ck_free(fn);
+    } else {
+      u32 max_score = max_dfg_score();
+      if (max_score > queue_cur->dfg_max)
+        is_interesting = 1;
     }
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
@@ -8525,6 +8539,7 @@ void init_clusters() {
 static void init_cludafl() {
   queue_entry_id_vec = vector_create();
   queue_input_hash_map = hashmap_create(1024);
+  dfg_hash_map = hashmap_create(1024);
   val_hashmap = hashmap_create(1024);
   mut_tracker_global = mut_tracker_create();
 }
@@ -8532,6 +8547,7 @@ static void init_cludafl() {
 static void destroy_cludafl() {
   vector_free(queue_entry_id_vec);
   hashmap_free(queue_input_hash_map);
+  hashmap_free(dfg_hash_map);
   hashmap_free(val_hashmap);
   mut_tracker_free(mut_tracker_global);
 }

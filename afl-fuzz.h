@@ -119,15 +119,15 @@ void mut_tracker_update(struct mut_tracker *tracker, u32 mut, u32 sel_num, u8 in
 
 struct beta_dist mut_tracker_get(struct mut_tracker *tracker) {
   struct beta_dist dist;
-  dist.alpha = (double)(tracker->inter_num + 1);
-  dist.beta = (double)(tracker->total_num - tracker->inter_num + 1);
+  dist.alpha = (double)(tracker->inter_num + 2);
+  dist.beta = (double)(tracker->total_num - tracker->inter_num + 2);
   return dist;
 }
 
 struct beta_dist mut_tracker_get_mut(struct mut_tracker *tracker, u32 mut) {
   struct beta_dist dist;
-  dist.alpha = (double)(tracker->inter->data[mut] + 1);
-  dist.beta = (double)(tracker->total->data[mut] - tracker->inter->data[mut] + 1);
+  dist.alpha = (double)(tracker->inter->data[mut] + 2);
+  dist.beta = (double)(tracker->total->data[mut] - tracker->inter->data[mut] + 2);
   return dist;
 }
 
@@ -174,6 +174,7 @@ struct queue_entry {
   // CLUDAFL
   u32 input_hash;
   u32 dfg_hash;
+  u32 dfg_max;
   struct array *dfg_arr;
   struct mut_tracker *mut_tracker;
 
