@@ -80,12 +80,18 @@ u32 array_size(struct array *arr) {
 }
 
 /* Multi-armed bandit stuffs */
+
+/**
+ * Multi-armed bandit (MAB) structure.
+ * 
+ * It contains interesting and total inputs.
+ */
 struct mut_tracker {
   u32 size;
   u32 inter_num;
   u32 total_num;
   struct array *inter; // Interesting
-  struct array* total; // Total
+  struct array *total; // Total
 };
 
 struct beta_dist {
@@ -185,6 +191,9 @@ void mut_tracker_update(struct mut_tracker *tracker, u32 mut, u32 sel_num, u8 in
   tracker->total_num += sel_num;
 }
 
+/**
+ * Get the beta dist. of the input
+ */
 struct beta_dist mut_tracker_get(struct mut_tracker *tracker) {
   struct beta_dist dist;
   dist.alpha = (double)(tracker->inter_num + 2);
@@ -192,6 +201,9 @@ struct beta_dist mut_tracker_get(struct mut_tracker *tracker) {
   return dist;
 }
 
+/**
+ * Get the beta dist. of the mutator
+ */
 struct beta_dist mut_tracker_get_mut(struct mut_tracker *tracker, u32 mut) {
   struct beta_dist dist;
   dist.alpha = (double)(tracker->inter->data[mut] + 2);
@@ -203,6 +215,10 @@ double beta_mode(struct beta_dist dist) {
   return (dist.alpha - 1.0) / (dist.alpha + dist.beta - 2.0);
 }
 
+/**
+ * Update the beta distribution.
+ * Update the beta value with simple heuristic to prevent the extreme cases (i.e. beta_mode() >= 1.0).
+ */
 struct beta_dist beta_dist_update(struct beta_dist src, struct beta_dist global) {
   struct beta_dist dist;
   // Adjust the alpha and beta values based on update
