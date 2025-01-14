@@ -252,9 +252,6 @@ static struct queue_entry*
   first_unhandled;                    /* 1st unhandled item in the queue  */
 
 static struct queue_entry*
-  shortcut_per_100[1024];             /* 100*N entries (replace next_100) */
-
-static struct queue_entry*
   top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
 
 struct extra_data {
@@ -297,8 +294,7 @@ static struct mut_tracker *mut_tracker_global = NULL; // global mut tracker
 static struct hashmap *val_hashmap = NULL;
 
 /* Multi-armed bandit */
-static struct node_seed *seed_nodes[1024]; // seed nodes for tree
-static u32 seed_size=0; // size of seed nodes
+static u8 is_interesting = 0;  // Reset and set to 1 in save_if_interesting()
 
 /* Fuzzing stages */
 
@@ -802,11 +798,11 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 
 /* Insert a test case to the queue, preserving the sorted order based on the
- * proximity score. Updates global variables 'queue', 'shortcut_per_100', and
+ * proximity score. Updates global variables 'queue', and
  * 'first_unhandled'. */
 static void sorted_insert_to_queue(struct queue_entry* q) {
 
-  if (!queue) shortcut_per_100[0] = queue = q;
+  if (!queue) queue = q;
   else {
     struct queue_entry* q_probe;
     u32 is_inserted = 0, i = 0;
@@ -819,14 +815,10 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
       is_inserted = 1;
     }
 
-    // Traverse through the list to (1) update 'shortcut_per_100', (2) update
+    // Traverse through the list to (1) update
     // 'first_unhandled', and (3) insert 'q' at the proper position.
     q_probe = queue;
     while (q_probe) {
-
-      if ((i % 100 == 0) && (i / 100 < 1024)) {
-        shortcut_per_100[(i / 100)] = q_probe;
-      }
 
       if (!first_unhandled && !q_probe->handled_in_cycle)
         first_unhandled = q_probe;
@@ -882,12 +874,10 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
 static void sort_queue(void) {
 
   struct queue_entry *q_next, *q_cur;
-  u32 i;
 
-  // First, backup 'queue'. Then, reset 'queue' and 'shortcut_per_100'.
+  // First, backup 'queue'. Then, reset 'queue'
   q_cur = queue;
   queue = NULL;
-  for (i = 0; i < 1024; i++) shortcut_per_100[i] = NULL;
 
   while (q_cur) {
 
@@ -3646,9 +3636,11 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  keeping = 0, res;
   u64 prox_score;
   u8 has_unique_memval = 0;
+  is_interesting = 0;
 
   if (check_valid_res(fault)) {
     has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc());
+    is_interesting = has_unique_memval;
     if (has_unique_memval) {
       fn = alloc_printf("%s/memory/input/%s-%d", out_dir, fault == 0 ? "pos" : "neg", hashmap_size(val_hashmap));
       fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
@@ -5581,26 +5573,29 @@ struct queue_entry *select_next_cluster_dafl(void) {
 }
 
 /**
- * Select an input and mutators with multi-armed bandit algorithm.
- * It also decides use_stacking and stack_max.
+ * Select an input with multi-armed bandit algorithm.
  */
 struct queue_entry *select_next_mab(void) {
-  // Select input
-  double max_score=0.;
-  struct node_seed *selected=NULL;
-  for (u32 i=0;i<seed_size;i++) {
-    // TODO: Change to beta dist. RNG
-    double score=beta_mode(seed_nodes[i]->alpha,seed_nodes[i]->beta);
-    if (score>max_score) {
-      max_score=score;
-      selected=seed_nodes[i];
+  if (first_unhandled) { // This is set only when a new item was added.
+    queue_cur = first_unhandled;
+    first_unhandled = NULL;
+  } else { // Proceed to the next unhandled item in the queue.
+    struct beta_dist bd = mut_tracker_get(mut_tracker_global);
+    while (queue_cur) {
+      if (!queue_cur->handled_in_cycle) {
+        // Use beta distribution to decide whether to select this input
+        struct beta_dist bd_cur = mut_tracker_get(queue_cur->mut_tracker);
+        double score = beta_mode(beta_dist_update(bd_cur, bd));
+        double r = (double)rand() / RAND_MAX;
+        if (score > r) {
+          return queue_cur;
+        }
+      }
+      queue_cur = queue_cur->next;
     }
   }
 
-  // Select use_stacking, stack_max and mutators
-  select_mutators(selected,10);
-
-  return selected->seed;
+  return NULL; // Goto next cycle
 }
 
 /**
@@ -5622,15 +5617,32 @@ struct queue_entry *select_next(void) {
 }
 
 u32 select_mutator(struct queue_entry *q, u32 max_mutator) {
+  if (select_strategy != SELECT_MAB) {
+    return UR(max_mutator);
+  }
+  // Select from the mutator list with multi-armed bandit algorithm.
+  double score[17];
+  double total = 0.0;
+  struct beta_dist bd = mut_tracker_get(mut_tracker_global);
+  for (u32 i = 0; i < max_mutator; i++) {
+    score[i] = beta_mode(beta_dist_update(mut_tracker_get_mut(q->mut_tracker, i), bd));
+    total += score[i];
+  }
+  double r = (double)rand() / RAND_MAX * total;
+  for (u32 i = 0; i < max_mutator; i++) {
+    r -= score[i];
+    if (r <= 0) {
+      return i;
+    }
+  }
   return UR(max_mutator);
 }
 
 void log_mutator(struct queue_entry *q, u32* mut_log) {
-  u8 was_interesting = 0; // Get 
   for (u32 mut = 0; mut < 17; mut++) {
     u32 sel_num = mut_log[mut];
-    mut_tracker_update(mut_tracker_global, mut, sel_num, was_interesting);
-    mut_tracker_update(q->mut_tracker, mut, sel_num, was_interesting);
+    mut_tracker_update(mut_tracker_global, mut, sel_num, is_interesting);
+    mut_tracker_update(q->mut_tracker, mut, sel_num, is_interesting);
   }
 }
 
@@ -6793,10 +6805,6 @@ havoc_stage:
   }
 
   if (stage_max < HAVOC_MIN) stage_max = HAVOC_MIN;
-  // Use pre-selected stage_max when strategy is MAB
-  if (select_strategy == SELECT_MAB) {
-    stage_max = selected_stage_max;
-  }
 
   temp_len = len;
 
@@ -6809,30 +6817,15 @@ havoc_stage:
 
   u32 mut_log[17];
   memset(mut_log, 0, sizeof(mut_log));
-  u64 cur_mut=0;
 
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
 
-    u32 use_stacking;
-    // Use pre-selected use_stacking when strategy is MAB
-    if (select_strategy == SELECT_MAB) {
-      use_stacking = selected_use_stacking;
-    }
-    else{
-      use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
-    }
+    u32 use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
 
     stage_cur_val = use_stacking;
 
     for (i = 0; i < use_stacking; i++) {
-      u32 mut;
-      // Use pre-selected mutator when strategy is MAB. Select mutator otherwise.
-      if (select_strategy == SELECT_MAB) {
-        mut = selected_mutators[cur_mut];
-        cur_mut++;
-      } else {
-        mut = select_mutator(queue_cur, 15 + ((extras_cnt + a_extras_cnt) ? 2 : 0));
-      }
+      u32 mut = select_mutator(queue_cur, 15 + ((extras_cnt + a_extras_cnt) ? 2 : 0));
       u8 used = 1;
       switch (mut) {
 
@@ -7263,7 +7256,7 @@ retry_splicing:
   if (use_splicing && splice_cycle++ < SPLICE_CYCLES &&
       queued_paths > 1 && queue_cur->len > 1) {
 
-    u32 idx, idx_div, split_at;
+    u32 idx, split_at;
     u8* new_buf;
     s32 f_diff, l_diff;
 
@@ -7279,17 +7272,7 @@ retry_splicing:
     /* Pick a random queue entry and find it. */
 
     idx = UR(queued_paths);
-
-    idx_div = idx / 100;
-    if (idx_div < 1024) {
-      target = shortcut_per_100[idx_div];
-      idx -= idx_div * 100;
-    } else {
-      target = shortcut_per_100[1023];
-      idx -= idx_div * 1024;
-    }
-
-    while (idx--) target = target->next;
+    target = (struct queue_entry *)vector_get(queue_entry_id_vec, idx);
 
     /* Make sure that the target has a reasonable length and isn't yourself. */
 
@@ -8498,20 +8481,6 @@ void init_dfg(char *dfg_filename) {
   fclose(file);
 }
 
-/**
- * Init tree structure for MAB strategy.
- * L1: seeds
- * L2: mutators
- */
-void init_tree() {
-  struct queue_entry *q = queue;
-  while (q) {
-    struct node_seed *seed = create_seed_node(q);
-    seed_nodes[seed_size] = seed;
-    seed_size++;
-    q = q->next;
-  }
-}
 
 void init_clusters() {
 
@@ -8896,8 +8865,6 @@ int main(int argc, char** argv) {
     exit(0);
   } else if (select_strategy == SELECT_CLUSTER) {
     init_clusters();
-  } else if (select_strategy == SELECT_MAB) {
-    init_tree();
   }
 
   cull_queue();
