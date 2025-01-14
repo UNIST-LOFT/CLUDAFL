@@ -5599,7 +5599,7 @@ struct queue_entry *select_next_mab(void) {
       if (!queue_cur->handled_in_cycle) {
         // Use beta distribution to decide whether to select this input
         struct beta_dist bd_cur = mut_tracker_get(queue_cur->mut_tracker);
-        double score = beta_mode(beta_dist_update(bd_cur, bd));
+        double score = beta_rand_mt(beta_dist_update(bd_cur, bd));
         double r = (double)rand() / RAND_MAX;
         if (score > r) {
           return queue_cur;
@@ -5639,7 +5639,7 @@ u32 select_mutator(struct queue_entry *q, u32 max_mutator) {
   double total = 0.0;
   struct beta_dist bd = mut_tracker_get(mut_tracker_global);
   for (u32 i = 0; i < max_mutator; i++) {
-    score[i] = beta_mode(beta_dist_update(mut_tracker_get_mut(q->mut_tracker, i), bd));
+    score[i] = beta_rand_mt(beta_dist_update(mut_tracker_get_mut(q->mut_tracker, i), bd));
     total += score[i];
   }
   double r = (double)rand() / RAND_MAX * total;
