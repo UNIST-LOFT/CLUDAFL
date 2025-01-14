@@ -44,20 +44,6 @@ struct array {
   u64 *data;
 };
 
-struct mut_tracker {
-  u32 size;
-  u64 inter_num;
-  u64 total_num;
-  struct array *inter; // Interesting
-  struct array* total; // Total
-};
-
-/* Multi-armed bandit stuffs */
-struct beta_dist {
-  double alpha;
-  double beta;
-};
-
 struct array *array_create(u64 size) {
   struct array *arr = (struct array *)ck_alloc(sizeof(struct array));
   arr->size = size;
