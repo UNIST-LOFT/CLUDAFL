@@ -291,7 +291,7 @@ static struct vector *dfg_info_vector = NULL; // vector<struct dfg_node_info *> 
 static struct vector *queue_entry_id_vec = NULL; // vector<queue_entry *>, entry_id is index
 static struct hashmap *queue_input_hash_map = NULL; // map<input_hash, queue_entry *> for queue entry
 static struct cluster_manager *cluster_manager = NULL; // cluster manager
-static u8 *select_strategy = "dafl"; // strategy for selecting input. (dafl, random, random_cluster, dafl_cluster, default: dafl)
+enum selection_strategy select_strategy = SELECT_DAFL; // strategy for selecting input. (dafl, random, random_cluster, dafl_cluster, default: dafl)
 static struct mut_tracker *mut_tracker_global = NULL; // global mut tracker
 
 static struct hashmap *val_hashmap = NULL;
@@ -3691,7 +3691,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     res = calibrate_case(argv, queue_last, mem, queue_cycle - 1, 0);
 
-    if (strcmp(select_strategy,"dafl_cluster")==0 || strcmp(select_strategy,"random_cluster")==0) {
+    if (select_strategy == SELECT_CLUSTER) {
       // CLUDAFL: Save run results - this should be done after calibration
       u8* save_filename = alloc_printf("%s/results.sbsv", out_dir);
       FILE *save_file = fopen(save_filename, "w");
@@ -5607,18 +5607,18 @@ struct queue_entry *select_next_mab(void) {
  * Select an input with various strategies
  */
 struct queue_entry *select_next(void) {
-  if (strcmp(select_strategy, "dafl") == 0) {
-    return select_next_dafl();
-  } else if (strcmp(select_strategy, "random") == 0) {
-    return select_next_random();
-  } else if (strcmp(select_strategy, "cluster_random") == 0) {
-    return select_next_cluster_random();
-  } else if (strcmp(select_strategy, "dafl_cluster") == 0) {
-    return select_next_cluster_dafl();
-  } else if (strcmp(select_strategy, "mab") == 0) {
-    return select_next_mab();
+  switch (select_strategy) {
+    case SELECT_DAFL:
+      return select_next_dafl();
+    case SELECT_RANDOM:
+      return select_next_random();
+    case SELECT_CLUSTER:
+      return select_next_cluster_dafl();
+    case SELECT_MAB:
+      return select_next_mab();
+    default:
+      return NULL;
   }
-  return NULL;
 }
 
 u32 select_mutator(struct queue_entry *q, u32 max_mutator) {
@@ -6794,7 +6794,7 @@ havoc_stage:
 
   if (stage_max < HAVOC_MIN) stage_max = HAVOC_MIN;
   // Use pre-selected stage_max when strategy is MAB
-  if (strcmp(select_strategy,"mab") == 0) {
+  if (select_strategy == SELECT_MAB) {
     stage_max = selected_stage_max;
   }
 
@@ -6815,7 +6815,7 @@ havoc_stage:
 
     u32 use_stacking;
     // Use pre-selected use_stacking when strategy is MAB
-    if (strcmp(select_strategy,"mab") == 0) {
+    if (select_strategy == SELECT_MAB) {
       use_stacking = selected_use_stacking;
     }
     else{
@@ -6827,7 +6827,7 @@ havoc_stage:
     for (i = 0; i < use_stacking; i++) {
       u32 mut;
       // Use pre-selected mutator when strategy is MAB. Select mutator otherwise.
-      if (strcmp(select_strategy,"mab") == 0) {
+      if (select_strategy == SELECT_MAB) {
         mut = selected_mutators[cur_mut];
         cur_mut++;
       } else {
@@ -8792,10 +8792,13 @@ int main(int argc, char** argv) {
         break;
 
       case 's':
-        if (strcmp(optarg, "dafl")!=0 && strcmp(optarg, "random")!=0 && strcmp(optarg, "dafl_cluster")!=0 &&
-                strcmp(optarg, "random_cluster")!=0 && strcmp(optarg, "mab")!=0)
-            FATAL("Unsupported strategy, it should be 'dafl', 'random', 'dafl_cluster', 'random_cluster' or 'mab");
-        select_strategy = optarg;
+        if (strcmp(optarg, "dafl") == 0) select_strategy = SELECT_DAFL;
+        else if (strcmp(optarg, "random") == 0) select_strategy = SELECT_RANDOM;
+        else if (strcmp(optarg, "cluster") == 0) select_strategy = SELECT_CLUSTER;
+        else if (strcmp(optarg, "dafl_cluster") == 0) select_strategy = SELECT_CLUSTER;
+        else if (strcmp(optarg, "random_cluster") == 0) select_strategy = SELECT_CLUSTER;
+        else if (strcmp(optarg, "mab") == 0) select_strategy = SELECT_MAB;
+        else FATAL("Unsupported strategy, it should be 'dafl', 'random', 'cluster', 'dafl_cluster', 'random_cluster' or 'mab");
         break;
 
       default:
@@ -8891,9 +8894,9 @@ int main(int argc, char** argv) {
   if (run_only_dry_run) {
     OKF("Dry run finished, exiting.");
     exit(0);
-  } else if (strcmp(select_strategy, "dafl_cluster") == 0 || strcmp(select_strategy, "random_cluster") == 0) {
+  } else if (select_strategy == SELECT_CLUSTER) {
     init_clusters();
-  } else if (strcmp(select_strategy, "mab") == 0) {
+  } else if (select_strategy == SELECT_MAB) {
     init_tree();
   }
 

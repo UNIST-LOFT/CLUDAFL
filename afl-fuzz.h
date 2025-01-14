@@ -13,6 +13,13 @@
 #define MAX_SCHEDULER_NUM 16
 #define MAX_QUEUE_U32_SIZE 12
 
+enum selection_strategy {
+  SELECT_DAFL,
+  SELECT_RANDOM,
+  SELECT_CLUSTER,
+  SELECT_MAB,
+};
+
 struct proximity_score {
   u64 original;
   double adjusted;
