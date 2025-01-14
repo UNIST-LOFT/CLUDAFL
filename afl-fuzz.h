@@ -39,20 +39,6 @@ struct array {
   u32 *data;
 };
 
-struct mut_tracker {
-  u32 size;
-  u32 inter_num;
-  u32 total_num;
-  struct array *inter; // Interesting
-  struct array* total; // Total
-};
-
-/* Multi-armed bandit stuffs */
-struct beta_dist {
-  double alpha;
-  double beta;
-};
-
 struct array *array_create(u32 size) {
   struct array *arr = (struct array *)ck_alloc(sizeof(struct array));
   arr->size = size;
@@ -89,6 +75,20 @@ void array_copy(struct array *dst, u32 *src, u32 size) {
 u32 array_size(struct array *arr) {
   return arr->size;
 }
+
+struct mut_tracker {
+  u32 size;
+  u32 inter_num;
+  u32 total_num;
+  struct array *inter; // Interesting
+  struct array* total; // Total
+};
+
+/* Multi-armed bandit stuffs */
+struct beta_dist {
+  double alpha;
+  double beta;
+};
 
 struct mut_tracker *mut_tracker_create() {
   struct mut_tracker *tracker = (struct mut_tracker *)ck_alloc(sizeof(struct mut_tracker));
@@ -133,6 +133,39 @@ struct beta_dist mut_tracker_get_mut(struct mut_tracker *tracker, u32 mut) {
 
 double beta_mode(struct beta_dist dist) {
   return (dist.alpha - 1.0) / (dist.alpha + dist.beta - 2.0);
+}
+
+/**
+ * Sample from a beta distribution.
+ * 
+ * TODO: Try to implement in C instead of calling Python script
+ * 
+ * @param dist_size Number of distributions
+ * @param dists Array of beta distributions
+ * @return u32 Index of the selected distribution
+ */
+u32 sample_beta(u32 dist_size, struct beta_dist *dists) {
+  char *cluster_cmd = "python3 sampling.py";
+  char *new_cmd=cluster_cmd;
+  for (u32 i=0;i<dist_size;i++) {
+    new_cmd = alloc_printf("%s %f %f", cluster_cmd, dists[i].alpha, dists[i].beta);
+    ck_free(cluster_cmd);
+    cluster_cmd = new_cmd;
+  }
+
+  FILE *fp = popen(cluster_cmd, "r");
+  if (!fp) {
+    FATAL("Failed to execute command: %s", cluster_cmd);
+  }
+  char buffer[10];
+  if (fgets(buffer, 10, fp) == NULL) {
+    FATAL("Failed to read from command: %s", cluster_cmd);
+  }
+  u32 index = atoi(buffer);
+
+  pclose(fp);
+  ck_free(cluster_cmd);
+  return index;
 }
 
 struct beta_dist beta_dist_update(struct beta_dist src, struct beta_dist global) {
