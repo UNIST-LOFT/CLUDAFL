@@ -295,6 +295,11 @@ static u8 *select_strategy = "dafl"; // strategy for selecting input. (dafl, ran
 static struct mut_tracker *mut_tracker_global = NULL; // global mut tracker
 
 static struct hashmap *val_hashmap = NULL;
+
+/* Multi-armed bandit */
+static struct node_seed *seed_nodes[1024]; // seed nodes for tree
+static u32 seed_size=0; // size of seed nodes
+
 /* Fuzzing stages */
 
 enum {
@@ -5576,6 +5581,29 @@ struct queue_entry *select_next_cluster_dafl(void) {
 }
 
 /**
+ * Select an input and mutators with multi-armed bandit algorithm.
+ * It also decides use_stacking and stack_max.
+ */
+struct queue_entry *select_next_mab(void) {
+  // Select input
+  double max_score=0.;
+  struct node_seed *selected=NULL;
+  for (u32 i=0;i<seed_size;i++) {
+    // TODO: Change to beta dist. RNG
+    double score=beta_mode(seed_nodes[i]->alpha,seed_nodes[i]->beta);
+    if (score>max_score) {
+      max_score=score;
+      selected=seed_nodes[i];
+    }
+  }
+
+  // Select use_stacking, stack_max and mutators
+  select_mutators(selected,10);
+
+  return selected->seed;
+}
+
+/**
  * Select an input with various strategies
  */
 struct queue_entry *select_next(void) {
@@ -5587,6 +5615,8 @@ struct queue_entry *select_next(void) {
     return select_next_cluster_random();
   } else if (strcmp(select_strategy, "dafl_cluster") == 0) {
     return select_next_cluster_dafl();
+  } else if (strcmp(select_strategy, "mab") == 0) {
+    return select_next_mab();
   }
   return NULL;
 }
@@ -6763,6 +6793,10 @@ havoc_stage:
   }
 
   if (stage_max < HAVOC_MIN) stage_max = HAVOC_MIN;
+  // Use pre-selected stage_max when strategy is MAB
+  if (strcmp(select_strategy,"mab") == 0) {
+    stage_max = selected_stage_max;
+  }
 
   temp_len = len;
 
@@ -6775,15 +6809,30 @@ havoc_stage:
 
   u32 mut_log[17];
   memset(mut_log, 0, sizeof(mut_log));
+  u64 cur_mut=0;
 
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
 
-    u32 use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
+    u32 use_stacking;
+    // Use pre-selected use_stacking when strategy is MAB
+    if (strcmp(select_strategy,"mab") == 0) {
+      use_stacking = selected_use_stacking;
+    }
+    else{
+      use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
+    }
 
     stage_cur_val = use_stacking;
 
     for (i = 0; i < use_stacking; i++) {
-      u32 mut = select_mutator(queue_cur, 15 + ((extras_cnt + a_extras_cnt) ? 2 : 0));
+      u32 mut;
+      // Use pre-selected mutator when strategy is MAB. Select mutator otherwise.
+      if (strcmp(select_strategy,"mab") == 0) {
+        mut = selected_mutators[cur_mut];
+        cur_mut++;
+      } else {
+        mut = select_mutator(queue_cur, 15 + ((extras_cnt + a_extras_cnt) ? 2 : 0));
+      }
       u8 used = 1;
       switch (mut) {
 
@@ -8449,6 +8498,21 @@ void init_dfg(char *dfg_filename) {
   fclose(file);
 }
 
+/**
+ * Init tree structure for MAB strategy.
+ * L1: seeds
+ * L2: mutators
+ */
+void init_tree() {
+  struct queue_entry *q = queue;
+  while (q) {
+    struct node_seed *seed = create_seed_node(q);
+    seed_nodes[seed_size] = seed;
+    seed_size++;
+    q = q->next;
+  }
+}
+
 void init_clusters() {
 
   char *cludafl_dir = getenv("CLUDAFL");
@@ -8729,8 +8793,8 @@ int main(int argc, char** argv) {
 
       case 's':
         if (strcmp(optarg, "dafl")!=0 && strcmp(optarg, "random")!=0 && strcmp(optarg, "dafl_cluster")!=0 &&
-                strcmp(optarg, "random_cluster")!=0)
-            FATAL("Unsupported strategy, it should be 'dafl', 'random', 'dafl_cluster' or 'random_cluster'");
+                strcmp(optarg, "random_cluster")!=0 && strcmp(optarg, "mab")!=0)
+            FATAL("Unsupported strategy, it should be 'dafl', 'random', 'dafl_cluster', 'random_cluster' or 'mab");
         select_strategy = optarg;
         break;
 
@@ -8829,6 +8893,8 @@ int main(int argc, char** argv) {
     exit(0);
   } else if (strcmp(select_strategy, "dafl_cluster") == 0 || strcmp(select_strategy, "random_cluster") == 0) {
     init_clusters();
+  } else if (strcmp(select_strategy, "mab") == 0) {
+    init_tree();
   }
 
   cull_queue();
