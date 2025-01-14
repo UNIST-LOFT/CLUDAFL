@@ -8,6 +8,8 @@
 #include "debug.h"
 #include "alloc-inl.h"
 #include <math.h>
+#include <gsl/gsl_rng.h>
+#include <gsl/gsl_randist.h>
 
 // For interval tree: should be power of 2
 #define INTERVAL_SIZE 1024
@@ -125,14 +127,35 @@ double gamma_rand(double shape, double scale) {
 }
 
 /**
- * Samples a random number from beta distribution.
+ * Samples a random number from beta distribution with Marsaglia-Tsang method.
  * 
  * This function first generates two random numbers from gamma distribution and compute the beta distribution.
  */
-double beta_rand(struct beta_dist dist) {
+double beta_rand_mt(struct beta_dist dist) {
     double x = gamma_rand(dist.alpha, 1.0);
     double y = gamma_rand(dist.beta, 1.0);
     return x / (x + y);
+}
+
+/**
+ * Samples a random number from beta distribution with GSL library.
+ * 
+ * This function calls gsl_ran_beta function from GSL library.
+ */
+double beta_rand_gsl(struct beta_dist dist) {
+  const gsl_rng_type * T;
+  gsl_rng * r;
+
+  gsl_rng_env_setup();
+
+  T = gsl_rng_default;
+  r = gsl_rng_alloc(T);
+
+  double sample = gsl_ran_beta(r, dist.alpha, dist.beta);
+
+  gsl_rng_free(r);
+
+  return sample;
 }
 
 struct mut_tracker *mut_tracker_create() {
