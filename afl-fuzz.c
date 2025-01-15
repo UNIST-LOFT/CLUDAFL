@@ -5814,7 +5814,15 @@ static u8 fuzz_one(char** argv) {
    *********************/
 
   orig_perf = perf_score = calculate_score(queue_cur);
-  LOGF("[sel] [entry %d] [perf %d] [inter %lld] [total %lld] [time %llu]\n", queue_cur->entry_id, perf_score, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
+  char *global_mut_total = array_print(mut_tracker_global->total);
+  char *global_mut_inter = array_print(mut_tracker_global->inter);
+  char *local_mut_total = array_print(queue_cur->mut_tracker->total);
+  char *local_mut_inter = array_print(queue_cur->mut_tracker->inter);
+  LOGF("[sel] [entry %d] [perf %d] [score %lld] [inter %lld] [total %lld] [gi %lld] [gt %lld] [time %lld] [mt %s] [mi %s] [gmt %s] [gmi %s]\n", queue_cur->entry_id, perf_score, queue_cur->prox_score, queue_cur->mut_tracker->inter_num, queue_cur->mut_tracker->total_num, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time, local_mut_total, local_mut_inter, global_mut_total, global_mut_inter);
+  ck_free(global_mut_total);
+  ck_free(global_mut_inter);
+  ck_free(local_mut_total);
+  ck_free(local_mut_inter);
   ACTF("[sel] [entry %d] [perf %d] [inter %lld] [total %lld] [time %llu]", queue_cur->entry_id, perf_score, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
 
 
