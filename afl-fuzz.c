@@ -5659,11 +5659,11 @@ u32 select_mutator(struct queue_entry *q, u32 max_mutator) {
 /**
  * Update the beta dist. for input and mutator
  */
-void log_mutator(struct queue_entry *q, u32* mut_log) {
+void log_mutator(struct queue_entry *q, u32* mut_log, u32 multiplier) {
   for (u32 mut = 0; mut < 17; mut++) {
     u32 sel_num = mut_log[mut];
-    mut_tracker_update(mut_tracker_global, mut, sel_num, is_interesting);
-    mut_tracker_update(q->mut_tracker, mut, sel_num, is_interesting);
+    mut_tracker_update(mut_tracker_global, mut, sel_num, is_interesting, multiplier);
+    mut_tracker_update(q->mut_tracker, mut, sel_num, is_interesting, multiplier);
   }
 }
 
@@ -6852,7 +6852,9 @@ havoc_stage:
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
     memset(mut_log, 0, sizeof(mut_log));
 
-    u32 use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
+    u32 stacking_bitshift = UR(HAVOC_STACK_POW2);
+    u32 use_stacking = 1 << (1 + stacking_bitshift);
+    u32 multiplier = (1 << (HAVOC_STACK_POW2 - stacking_bitshift - 1));
 
     stage_cur_val = use_stacking;
 
@@ -7242,7 +7244,7 @@ havoc_stage:
       goto abandon_entry;
 
     if (select_strategy==SELECT_MAB) // Update the beta dist. for each input and mutator
-      log_mutator(queue_cur, mut_log);
+      log_mutator(queue_cur, mut_log, multiplier);
 
     /* out_buf might have been mangled a bit, so let's restore it to its
        original size and shape. */

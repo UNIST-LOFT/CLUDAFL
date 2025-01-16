@@ -189,17 +189,18 @@ void mut_tracker_free(struct mut_tracker *tracker) {
   ck_free(tracker);
 }
 
-void mut_tracker_update(struct mut_tracker *tracker, u32 mut, u32 sel_num, u8 interesting) {
+void mut_tracker_update(struct mut_tracker *tracker, u32 mut, u32 sel_num, u8 interesting, u32 multiplier) {
   if (mut >= tracker->size) {
     FATAL("Mutation index out of bounds: %u >= %u", mut, tracker->size);
   }
   if (sel_num == 0) return;
+  u32 sel_num_adjusted = sel_num * multiplier;
   if (interesting) {
-    tracker->inter->data[mut] += sel_num;
-    tracker->inter_num += sel_num;
+    tracker->inter->data[mut] += sel_num_adjusted;
+    tracker->inter_num += sel_num_adjusted;
   }
-  tracker->total->data[mut] += sel_num;
-  tracker->total_num += sel_num;
+  tracker->total->data[mut] += sel_num_adjusted;
+  tracker->total_num += sel_num_adjusted;
 }
 
 /**
