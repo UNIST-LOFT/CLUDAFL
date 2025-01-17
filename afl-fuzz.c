@@ -5606,8 +5606,7 @@ struct queue_entry *select_next_mab(void) {
     while (queue_cur) {
       if (!queue_cur->handled_in_cycle) {
         // Use beta distribution to decide whether to select this input
-        struct beta_dist bd_cur = mut_tracker_get(queue_cur->mut_tracker);
-        if (bd_cur.alpha > 2.0) {
+        if (queue_cur->mut_tracker->inter_num > 0) {
           // If the gradient is higher than the global gradient, check short-term gradient
           double short_term_gradient = mut_tracker_get_short_term_gradient(queue_cur->mut_tracker, short_len);
           if (2 * short_term_gradient < global_gradient + global_gradient_short) {
@@ -5616,6 +5615,7 @@ struct queue_entry *select_next_mab(void) {
             mut_tracker_reset(queue_cur->mut_tracker);
           }
         }
+        struct beta_dist bd_cur = mut_tracker_get(queue_cur->mut_tracker);
         double score = beta_rand_mt(beta_dist_update(bd_cur, bd));
         double r = (double)rand() / RAND_MAX;
         if (score > r) {
