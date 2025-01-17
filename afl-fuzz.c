@@ -296,6 +296,7 @@ static struct hashmap *val_hashmap = NULL;
 
 /* Multi-armed bandit */
 static u8 is_interesting = 0;  // Reset and set to 1 in save_if_interesting()
+static u64 total_selections = 0;
 
 /* Fuzzing stages */
 
@@ -4937,6 +4938,9 @@ static void show_init_stats(void) {
   else if (avg_us > 20000) havoc_div = 5; /* 20-49 execs/sec  */
   else if (avg_us > 10000) havoc_div = 2; /* 50-100 execs/sec */
 
+  if (select_strategy == SELECT_MAB)
+    havoc_div = havoc_div * 10; // Less energy for MAB
+
   if (!resuming_fuzz) {
 
     if (max_len > 50 * 1024)
@@ -5596,10 +5600,22 @@ struct queue_entry *select_next_mab(void) {
     first_unhandled = NULL;
   } else { // Proceed to the next unhandled item in the queue.
     struct beta_dist bd = mut_tracker_get(mut_tracker_global);
+    u64 short_len = 2 * mut_tracker_global->total_num / (total_selections + 1);
+    double global_gradient = (double)mut_tracker_global->inter_num / (double)(mut_tracker_global->total_num + 1);
+    double global_gradient_short = mut_tracker_get_short_term_gradient(mut_tracker_global, short_len);
     while (queue_cur) {
       if (!queue_cur->handled_in_cycle) {
         // Use beta distribution to decide whether to select this input
         struct beta_dist bd_cur = mut_tracker_get(queue_cur->mut_tracker);
+        if (bd_cur.alpha > 2.0) {
+          // If the gradient is higher than the global gradient, check short-term gradient
+          double short_term_gradient = mut_tracker_get_short_term_gradient(queue_cur->mut_tracker, short_len);
+          if (2 * short_term_gradient < global_gradient + global_gradient_short) {
+            // Reset
+            LOGF("[mab] [reset] [entry %d] [gg %f] [ggs %f] [sg %f]", queue_cur->entry_id, global_gradient, global_gradient_short, short_term_gradient);
+            mut_tracker_reset(queue_cur->mut_tracker);
+          }
+        }
         double score = beta_rand_mt(beta_dist_update(bd_cur, bd));
         double r = (double)rand() / RAND_MAX;
         if (score > r) {
@@ -5665,6 +5681,20 @@ void log_mutator(struct queue_entry *q, u32* mut_log, u32 multiplier) {
     mut_tracker_update(mut_tracker_global, mut, sel_num, is_interesting, multiplier);
     mut_tracker_update(q->mut_tracker, mut, sel_num, is_interesting, multiplier);
   }
+
+  mut_tracker_update_num(mut_tracker_global, is_interesting);
+  mut_tracker_update_num(q->mut_tracker, is_interesting);
+
+  if (queue_u64_size(mut_tracker_global->total_queue) > 0) {
+    u64 prev = queue_u64_peek(mut_tracker_global->total_queue, queue_u64_size(mut_tracker_global->total_queue) - 1);
+    if (mut_tracker_global->total_num - prev >= vector_size(queue_entry_id_vec)) {
+      mut_tracker_update_queue(mut_tracker_global);
+    }
+  }
+  // if (mut_tracker_global->total_num % QUEUE_U64_GLOBAL_ENQUEUE_NUM == 0) {
+  //   mut_tracker_update_queue(mut_tracker_global);
+  // }
+  mut_tracker_update_queue(q->mut_tracker);
 }
 
 /* Take the current entry from the queue, fuzz it for a while. This
@@ -5818,7 +5848,8 @@ static u8 fuzz_one(char** argv) {
   char *global_mut_inter = array_print(mut_tracker_global->inter);
   char *local_mut_total = array_print(queue_cur->mut_tracker->total);
   char *local_mut_inter = array_print(queue_cur->mut_tracker->inter);
-  LOGF("[sel] [entry %d] [perf %d] [score %lld] [inter %lld] [total %lld] [gi %lld] [gt %lld] [time %lld] [mt %s] [mi %s] [gmt %s] [gmi %s]\n", queue_cur->entry_id, perf_score, queue_cur->prox_score, queue_cur->mut_tracker->inter_num, queue_cur->mut_tracker->total_num, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time, local_mut_total, local_mut_inter, global_mut_total, global_mut_inter);
+  total_selections++;
+  LOGF("[sel] [entry %d] [cycle %lld] [perf %d] [score %lld] [inter %lld] [total %lld] [gi %lld] [gt %lld] [time %lld] [mt %s] [mi %s] [gmt %s] [gmi %s]\n", queue_cur->entry_id, queue_cycle, perf_score, queue_cur->prox_score, queue_cur->mut_tracker->inter_num, queue_cur->mut_tracker->total_num, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time, local_mut_total, local_mut_inter, global_mut_total, global_mut_inter);
   ck_free(global_mut_total);
   ck_free(global_mut_inter);
   ck_free(local_mut_total);
@@ -6811,7 +6842,8 @@ havoc_stage:
 
     /* Adjust perf_score with the factor derived from the proximity score */
     u64 prox_score = queue_cur->prox_score;
-    perf_score = (u32) (calculate_factor(prox_score) * (double) perf_score);
+    if (select_strategy != SELECT_MAB)
+      perf_score = (u32) (calculate_factor(prox_score) * (double) perf_score);
 
     stage_name  = "havoc";
     stage_short = "havoc";
@@ -6827,7 +6859,8 @@ havoc_stage:
 
      /* Adjust perf_score with the factor derived from the proximity score */
     u64 prox_score = (queue_cur->prox_score + target->prox_score) / 2;
-    perf_score = (u32) (calculate_factor(prox_score) * (double) perf_score);
+    if (select_strategy != SELECT_MAB)
+      perf_score = (u32) (calculate_factor(prox_score) * (double) perf_score);
 
     sprintf(tmp, "splice %u", splice_cycle);
     stage_name  = tmp;
@@ -7243,8 +7276,8 @@ havoc_stage:
     if (common_fuzz_stuff(argv, out_buf, temp_len))
       goto abandon_entry;
 
-    if (select_strategy==SELECT_MAB) // Update the beta dist. for each input and mutator
-      log_mutator(queue_cur, mut_log, multiplier);
+    // if (select_strategy==SELECT_MAB) // Update the beta dist. for each input and mutator
+    log_mutator(queue_cur, mut_log, multiplier);
 
     /* out_buf might have been mangled a bit, so let's restore it to its
        original size and shape. */

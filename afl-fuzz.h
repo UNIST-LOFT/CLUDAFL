@@ -16,7 +16,8 @@
 // For interval tree: should be power of 2
 #define INTERVAL_SIZE 1024
 #define MAX_SCHEDULER_NUM 16
-#define MAX_QUEUE_U32_SIZE 12
+#define MAX_QUEUE_U64_SIZE 8192
+#define QUEUE_U64_GLOBAL_ENQUEUE_NUM 100
 
 enum selection_strategy {
   SELECT_DAFL,
@@ -85,9 +86,90 @@ u64 array_size(struct array *arr) {
 
 /* Multi-armed bandit stuffs */
 
+struct queue_u64 {
+  struct array *data;
+  u64 size;
+  u64 front;
+  u64 rear;
+};
+
+struct queue_u64 *queue_u64_create(u64 size) {
+  struct queue_u64 *queue = (struct queue_u64 *)ck_alloc(sizeof(struct queue_u64));
+  queue->data = array_create(size);
+  queue->size = size;
+  queue->front = 0;
+  queue->rear = 0;
+  return queue;
+}
+
+void queue_u64_free(struct queue_u64 *queue) {
+  array_free(queue->data);
+  ck_free(queue);
+}
+
+void queue_u64_clear(struct queue_u64 *queue) {
+  queue->front = 0;
+  queue->rear = 0;
+  queue->size = 0;
+  memset(queue->data->data, 0, array_size(queue->data) * sizeof(u64));
+}
+
+u64 queue_u64_index(struct queue_u64 *queue, u64 index) {
+  return (queue->front + index) % array_size(queue->data);
+}
+
+u64 queue_u64_dequeue(struct queue_u64 *queue) {
+  if (queue->size == 0) {
+    return 0;
+  }
+  u64 value = array_get(queue->data, queue->front);
+  queue->front = queue_u64_index(queue, 1);
+  queue->size--;
+  return value;
+}
+
+void queue_u64_enqueue(struct queue_u64 *queue, u64 value) {
+  if (queue->size == array_size(queue->data)) {
+    queue_u64_dequeue(queue);
+  }
+  array_set(queue->data, queue->rear, value);
+  queue->rear = (queue->rear + 1) % array_size(queue->data);
+  queue->size++;
+}
+
+u64 queue_u64_size(struct queue_u64 *queue) {
+  return queue->size;
+}
+
+u64 queue_u64_peek(struct queue_u64 *queue, u64 index) {
+  if (queue->size == 0) {
+    return 0;
+  }
+  return array_get(queue->data, queue_u64_index(queue, index));
+}
+
+u64 queue_u64_diff(struct queue_u64 *queue, u64 window_size) {
+  if (queue->size == 0) {
+    return 0;
+  }
+  window_size = window_size > (queue->size - 1) ? (queue->size - 1) : window_size;
+  u64 front = queue_u64_peek(queue, queue->size - window_size - 1);
+  u64 rear = queue_u64_peek(queue, queue->size - 1);
+  return rear - front;
+}
+
+double queue_u64_gradient(struct queue_u64 *queue, u64 window_size) {
+  if (queue->size == 0) {
+    return 0.0;
+  }
+  window_size = window_size > (queue->size - 1) ? (queue->size - 1) : window_size;
+  u64 diff = queue_u64_diff(queue, window_size);
+  return (double)(diff) / (double)window_size;
+}
+
 /**
  * Multi-armed bandit (MAB) structure.
- * 
+ *
  * It contains interesting and total inputs.
  */
 struct mut_tracker {
@@ -96,6 +178,9 @@ struct mut_tracker {
   u64 total_num;
   struct array *inter; // Interesting
   struct array *total; // Total
+  struct queue_u64 *inter_queue;
+  struct queue_u64 *total_queue;
+  struct mut_tracker *old;
 };
 
 struct beta_dist {
@@ -180,12 +265,16 @@ struct mut_tracker *mut_tracker_create() {
   tracker->size = 17;
   tracker->inter = array_create(tracker->size);
   tracker->total = array_create(tracker->size);
+  tracker->inter_queue = queue_u64_create(MAX_QUEUE_U64_SIZE);
+  tracker->total_queue = queue_u64_create(MAX_QUEUE_U64_SIZE);
   return tracker;
 }
 
 void mut_tracker_free(struct mut_tracker *tracker) {
   array_free(tracker->inter);
   array_free(tracker->total);
+  queue_u64_free(tracker->inter_queue);
+  queue_u64_free(tracker->total_queue);
   ck_free(tracker);
 }
 
@@ -197,10 +286,22 @@ void mut_tracker_update(struct mut_tracker *tracker, u32 mut, u32 sel_num, u8 in
   u32 sel_num_adjusted = sel_num * multiplier;
   if (interesting) {
     tracker->inter->data[mut] += sel_num_adjusted;
-    tracker->inter_num += sel_num_adjusted;
+    // tracker->inter_num += sel_num_adjusted;
   }
   tracker->total->data[mut] += sel_num_adjusted;
-  tracker->total_num += sel_num_adjusted;
+  // tracker->total_num += sel_num_adjusted;
+}
+
+void mut_tracker_update_num(struct mut_tracker *tracker, u8 is_interesting) {
+  if (is_interesting) {
+    tracker->inter_num++;
+  }
+  tracker->total_num++;
+}
+
+void mut_tracker_update_queue(struct mut_tracker *tracker) {
+  queue_u64_enqueue(tracker->inter_queue, tracker->inter_num);
+  queue_u64_enqueue(tracker->total_queue, tracker->total_num);
 }
 
 /**
@@ -221,6 +322,35 @@ struct beta_dist mut_tracker_get_mut(struct mut_tracker *tracker, u32 mut) {
   dist.alpha = (double)(tracker->inter->data[mut] + 2);
   dist.beta = (double)(tracker->total->data[mut] - tracker->inter->data[mut] + 2);
   return dist;
+}
+
+double mut_tracker_get_short_term_gradient(struct mut_tracker *tracker, u32 len) {
+  if (len == 0) return 0.0;
+  if (len > MAX_QUEUE_U64_SIZE) len = MAX_QUEUE_U64_SIZE;
+  u64 inter_diff = queue_u64_diff(tracker->inter_queue, len);
+  u64 total_diff = queue_u64_diff(tracker->total_queue, len);
+  if (total_diff == 0) return 0.0;
+  return (double)inter_diff / (double)total_diff;
+}
+
+void mut_tracker_reset(struct mut_tracker *tracker) {
+  if (tracker->old == NULL) {
+    tracker->old = mut_tracker_create();
+  }
+  // Copy to old tracker
+  for (u32 i = 0; i < tracker->size; i++) {
+    tracker->old->inter->data[i] += tracker->inter->data[i];
+    tracker->old->total->data[i] += tracker->total->data[i];
+    tracker->inter->data[i] = 0;
+    tracker->total->data[i] = 0;
+  }
+  tracker->old->inter_num += tracker->inter_num;
+  tracker->old->total_num += tracker->total_num;
+  // Reset the current tracker
+  tracker->inter_num = 0;
+  tracker->total_num = 0;
+  queue_u64_clear(tracker->inter_queue);
+  queue_u64_clear(tracker->total_queue);
 }
 
 double beta_mode(struct beta_dist dist) {
