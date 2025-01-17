@@ -5612,7 +5612,7 @@ struct queue_entry *select_next_mab(void) {
           double short_term_gradient = mut_tracker_get_short_term_gradient(queue_cur->mut_tracker, short_len);
           if (2 * short_term_gradient < global_gradient + global_gradient_short) {
             // Reset
-            LOGF("[mab] [reset] [entry %d] [gg %f] [ggs %f] [sg %f]", queue_cur->entry_id, global_gradient, global_gradient_short, short_term_gradient);
+            LOGF("[mab] [reset] [entry %d] [gg %f] [ggs %f] [sg %f] [s %llu] [sl %llu]\n", queue_cur->entry_id, global_gradient, global_gradient_short, short_term_gradient, total_selections, short_len);
             mut_tracker_reset(queue_cur->mut_tracker);
           }
         }
