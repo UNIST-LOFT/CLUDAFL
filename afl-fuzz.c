@@ -3200,7 +3200,7 @@ static void perform_dry_run(char** argv) {
     close(fd);
 
     res = calibrate_case(argv, q, use_mem, 0, 1);
-    LOGF("[dry-run] [file %s] [hash %u] [dfg %u] [res %d] [prox %lld] [pre %lld]\n", q->fname, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
+    LOGF("[dry-run] [entry %d] [file %s] [hash %u] [dfg %u] [res %d] [prox %lld] [pre %lld]\n", q->entry_id, q->fname, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
 
     save_dry_run(save_file, q, q->exec_us, res);
     u8 has_unique_memval = get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc());
@@ -3686,6 +3686,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 #endif /* ^!SIMPLE_FILES */
 
     add_to_queue(fn, len, 0, prox_score);
+    LOGF("[seed] [seed %d] [entry %d] [prox %lld]\n", queue_last->entry_id, queue_cur->entry_id, prox_score);
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
