@@ -5601,6 +5601,7 @@ struct queue_entry *select_next_mab(void) {
   } else { // Proceed to the next unhandled item in the queue.
     struct beta_dist bd = mut_tracker_get(mut_tracker_global);
     u64 short_len = 2 * mut_tracker_global->total_num / (total_selections + 1);
+    if (short_len > MAX_QUEUE_U64_SIZE) short_len = MAX_QUEUE_U64_SIZE;
     double global_gradient = (double)mut_tracker_global->inter_num / (double)(mut_tracker_global->total_num + 1);
     double global_gradient_short = mut_tracker_get_short_term_gradient(mut_tracker_global, short_len);
     while (queue_cur) {
@@ -5608,11 +5609,14 @@ struct queue_entry *select_next_mab(void) {
         // Use beta distribution to decide whether to select this input
         if (queue_cur->mut_tracker->inter_num > 0) {
           // If the gradient is higher than the global gradient, check short-term gradient
-          double short_term_gradient = mut_tracker_get_short_term_gradient(queue_cur->mut_tracker, short_len);
-          if (2 * short_term_gradient < global_gradient + global_gradient_short) {
-            // Reset
-            LOGF("[mab] [reset] [entry %d] [gg %f] [ggs %f] [sg %f] [s %llu] [sl %llu]\n", queue_cur->entry_id, global_gradient, global_gradient_short, short_term_gradient, total_selections, short_len);
-            mut_tracker_reset(queue_cur->mut_tracker);
+          u64 total_diff = queue_u64_diff(queue_cur->mut_tracker->total_queue, short_len);
+          if (total_diff >= short_len) {
+            double short_term_gradient = mut_tracker_get_short_term_gradient(queue_cur->mut_tracker, short_len);
+            if (2 * short_term_gradient < global_gradient + global_gradient_short) {
+              // Reset
+              LOGF("[mab] [reset] [entry %d] [gg %f] [ggs %f] [sg %f] [s %llu] [sl %llu]\n", queue_cur->entry_id, global_gradient, global_gradient_short, short_term_gradient, total_selections, short_len);
+              mut_tracker_reset(queue_cur->mut_tracker);
+            }
           }
         }
         struct beta_dist bd_cur = mut_tracker_get(queue_cur->mut_tracker);
