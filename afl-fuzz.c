@@ -3686,7 +3686,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 #endif /* ^!SIMPLE_FILES */
 
     add_to_queue(fn, len, 0, prox_score);
-    LOGF("[seed] [seed %d] [entry %d] [prox %lld]\n", queue_last->entry_id, queue_cur->entry_id, prox_score);
+    LOGF("[seed] [seed %d] [new-entry %d] [prox %lld] [time %lld]\n", queue_cur->entry_id, queue_last->entry_id, prox_score, get_cur_time() - start_time);
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
