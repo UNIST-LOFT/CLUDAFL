@@ -3163,7 +3163,7 @@ static void save_dry_run(FILE *save_file, struct queue_entry *q, u64 exec_len, u
   u32 dfg_hash = q->dfg_hash;
   char *vec_str = array_print(q->dfg_arr);
   fprintf(save_file, "[seed] [file %s] [hash %u] [dfg %u] [res %d] [time %llu] [vec %s]\n", fn, hash, dfg_hash, res, exec_len, vec_str);
-  LOGF("[seed] [file %s] [hash %u] [dfg %u] [res %d] [exec-time %llu] [time %llu] [vec %s]\n", fn, hash, dfg_hash, res, exec_len, get_cur_time() - start_time, vec_str);
+  LOGF("[save_dry_run] [file %s] [hash %u] [dfg %u] [res %d] [exec-time %llu] [time %llu] [vec %s]\n", fn, hash, dfg_hash, res, exec_len, get_cur_time() - start_time, vec_str);
   ck_free(vec_str);
 
 }
