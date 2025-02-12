@@ -57,6 +57,7 @@
 #include <termios.h>
 #include <dlfcn.h>
 #include <sched.h>
+#include <curl/curl.h>
 
 #include <sys/wait.h>
 #include <sys/time.h>
@@ -291,8 +292,13 @@ static struct hashmap *dfg_hash_map = NULL; // map<dfg_hash, queue_entry *> for 
 static struct cluster_manager *cluster_manager = NULL; // cluster manager
 enum selection_strategy select_strategy = SELECT_DAFL; // strategy for selecting input. (dafl, random, random_cluster, dafl_cluster, default: dafl)
 static struct mut_tracker *mut_tracker_global = NULL; // global mut tracker
+static u8 use_llm=0; // Use LLM
+static u8* binary_name;  // Name of binary
+static u64 total_llm_input_cnt = 0;
 
 static struct hashmap *val_hashmap = NULL;
+
+static CURL *curl = NULL;
 
 /* Multi-armed bandit */
 static u8 is_interesting = 0;  // Reset and set to 1 in save_if_interesting()
@@ -3168,6 +3174,197 @@ static void save_dry_run(FILE *save_file, struct queue_entry *q, u64 exec_len, u
 
 }
 
+static void perform_dry_run_single(char** argv, struct queue_entry *q) {
+  u32 cal_failures = 0;
+  u8* skip_crashes = getenv("AFL_SKIP_CRASHES");
+
+  u8* use_mem;
+  u8  res;
+  s32 fd;
+
+  u8 *fn = strrchr(q->fname, '/') + 1;
+
+  ACTF("Attempting dry run with '%s'...", fn);
+
+  fd = open(q->fname, O_RDONLY);
+  if (fd < 0) PFATAL("Unable to open '%s'", q->fname);
+
+  use_mem = ck_alloc_nozero(q->len);
+
+  if (read(fd, use_mem, q->len) != q->len)
+    FATAL("Short read from '%s'", q->fname);
+
+  close(fd);
+
+  res = calibrate_case(argv, q, use_mem, 0, 1);
+  LOGF("[dry-run] [entry %d] [file %s] [hash %u] [dfg %u] [res %d] [prox %lld] [pre %lld]\n", q->entry_id, q->fname, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
+
+  u8 has_unique_memval = get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc());
+  if (has_unique_memval) {
+    mut_tracker_update_num(mut_tracker_global, 1);
+    mut_tracker_update_num(q->mut_tracker, 1);
+    mut_tracker_update_queue(q->mut_tracker);
+    fn = alloc_printf("%s/memory/input/%s-%d", out_dir, res == FAULT_NONE ? "pos" : "neg", hashmap_size(val_hashmap));
+    fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) PFATAL("Unable to create '%s'", fn);
+    ck_write(fd, use_mem, q->len, fn);
+    close(fd);
+    ck_free(fn);
+  }
+
+  ck_free(use_mem);
+
+  if (stop_soon) return;
+
+  if (res == crash_mode || res == FAULT_NOBITS)
+    SAYF(cGRA "    len = %u, map size = %u, exec speed = %llu us\n" cRST,
+          q->len, q->bitmap_size, q->exec_us);
+  fn = strrchr(q->fname, '/') + 1;
+  switch (res) {
+
+    case FAULT_NONE:
+
+      if (q == queue) check_map_coverage();
+
+      // if (crash_mode) FATAL("Test case '%s' does *NOT* crash", fn);
+
+      break;
+
+    case FAULT_TMOUT:
+
+      if (timeout_given) {
+
+        /* The -t nn+ syntax in the command line sets timeout_given to '2' and
+            instructs afl-fuzz to tolerate but skip queue entries that time
+            out. */
+
+        if (timeout_given > 1) {
+          WARNF("Test case results in a timeout (skipping)");
+          q->cal_failed = CAL_CHANCES;
+          cal_failures++;
+          break;
+        }
+
+        SAYF("\n" cLRD "[-] " cRST
+              "The program took more than %u ms to process one of the initial test cases.\n"
+              "    Usually, the right thing to do is to relax the -t option - or to delete it\n"
+              "    altogether and allow the fuzzer to auto-calibrate. That said, if you know\n"
+              "    what you are doing and want to simply skip the unruly test cases, append\n"
+              "    '+' at the end of the value passed to -t ('-t %u+').\n", exec_tmout,
+              exec_tmout);
+
+        FATAL("Test case '%s' results in a timeout", fn);
+
+      } else {
+
+        SAYF("\n" cLRD "[-] " cRST
+              "The program took more than %u ms to process one of the initial test cases.\n"
+              "    This is bad news; raising the limit with the -t option is possible, but\n"
+              "    will probably make the fuzzing process extremely slow.\n\n"
+
+              "    If this test case is just a fluke, the other option is to just avoid it\n"
+              "    altogether, and find one that is less of a CPU hog.\n", exec_tmout);
+
+        FATAL("Test case '%s' results in a timeout", fn);
+
+      }
+
+    case FAULT_CRASH:
+
+      break;
+
+      if (skip_crashes) {
+        WARNF("Test case results in a crash (skipping)");
+        q->cal_failed = CAL_CHANCES;
+        cal_failures++;
+        break;
+      }
+
+      if (mem_limit) {
+
+        SAYF("\n" cLRD "[-] " cRST
+              "Oops, the program crashed with one of the test cases provided. There are\n"
+              "    several possible explanations:\n\n"
+
+              "    - The test case causes known crashes under normal working conditions. If\n"
+              "      so, please remove it. The fuzzer should be seeded with interesting\n"
+              "      inputs - but not ones that cause an outright crash.\n\n"
+
+              "    - The current memory limit (%s) is too low for this program, causing\n"
+              "      it to die due to OOM when parsing valid files. To fix this, try\n"
+              "      bumping it up with the -m setting in the command line. If in doubt,\n"
+              "      try something along the lines of:\n\n"
+
+#ifdef RLIMIT_AS
+              "      ( ulimit -Sv $[%llu << 10]; /path/to/binary [...] <testcase )\n\n"
+#else
+              "      ( ulimit -Sd $[%llu << 10]; /path/to/binary [...] <testcase )\n\n"
+#endif /* ^RLIMIT_AS */
+
+              "      Tip: you can use http://jwilk.net/software/recidivm to quickly\n"
+              "      estimate the required amount of virtual memory for the binary. Also,\n"
+              "      if you are using ASAN, see %s/notes_for_asan.txt.\n\n"
+
+#ifdef __APPLE__
+
+              "    - On MacOS X, the semantics of fork() syscalls are non-standard and may\n"
+              "      break afl-fuzz performance optimizations when running platform-specific\n"
+              "      binaries. To fix this, set AFL_NO_FORKSRV=1 in the environment.\n\n"
+
+#endif /* __APPLE__ */
+
+              "    - Least likely, there is a horrible bug in the fuzzer. If other options\n"
+              "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n",
+              DMS(mem_limit << 20), mem_limit - 1, doc_path);
+
+      } else {
+
+        SAYF("\n" cLRD "[-] " cRST
+              "Oops, the program crashed with one of the test cases provided. There are\n"
+              "    several possible explanations:\n\n"
+
+              "    - The test case causes known crashes under normal working conditions. If\n"
+              "      so, please remove it. The fuzzer should be seeded with interesting\n"
+              "      inputs - but not ones that cause an outright crash.\n\n"
+
+#ifdef __APPLE__
+
+              "    - On MacOS X, the semantics of fork() syscalls are non-standard and may\n"
+              "      break afl-fuzz performance optimizations when running platform-specific\n"
+              "      binaries. To fix this, set AFL_NO_FORKSRV=1 in the environment.\n\n"
+
+#endif /* __APPLE__ */
+
+              "    - Least likely, there is a horrible bug in the fuzzer. If other options\n"
+              "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n");
+
+      }
+
+      FATAL("Test case '%s' results in a crash", fn);
+
+    case FAULT_ERROR:
+
+      FATAL("Unable to execute target application ('%s')", argv[0]);
+
+    case FAULT_NOINST:
+
+      FATAL("No instrumentation detected");
+
+    case FAULT_NOBITS:
+
+      useless_at_start++;
+
+      if (!in_bitmap && !shuffle_queue)
+        WARNF("No new instrumentation output, test case may be useless.");
+
+      break;
+
+  }
+
+  if (q->var_behavior) WARNF("Instrumentation output varies across runs.");
+
+}
+
 /* Perform dry run of all test cases to confirm that the app is working as
    expected. This is done only for the initial inputs, and only once. */
 
@@ -3205,6 +3402,9 @@ static void perform_dry_run(char** argv) {
     save_dry_run(save_file, q, q->exec_us, res);
     u8 has_unique_memval = get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc());
     if (has_unique_memval) {
+      mut_tracker_update_num(mut_tracker_global, 1);
+      mut_tracker_update_num(q->mut_tracker, 1);
+      mut_tracker_update_queue(q->mut_tracker);
       fn = alloc_printf("%s/memory/input/%s-%d", out_dir, res == FAULT_NONE ? "pos" : "neg", hashmap_size(val_hashmap));
       fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
       if (fd < 0) PFATAL("Unable to create '%s'", fn);
@@ -4378,6 +4578,23 @@ static void maybe_delete_out_dir(void) {
   if (delete_files(fn, NULL)) goto dir_cleanup_failed;
   ck_free(fn);
 
+  fn = alloc_printf("%s/cludafl/good", out_dir);
+  if (delete_files(fn, NULL)) goto dir_cleanup_failed;
+  ck_free(fn);
+
+  fn = alloc_printf("%s/cludafl/bad", out_dir);
+  if (delete_files(fn, NULL)) goto dir_cleanup_failed;
+  ck_free(fn);
+
+  fn = alloc_printf("%s/cludafl/queue", out_dir);
+  if (delete_files(fn, NULL)) goto dir_cleanup_failed;
+  ck_free(fn);
+
+  fn = alloc_printf("%s/cludafl", out_dir);
+  if (delete_files(fn, NULL)) goto dir_cleanup_failed;
+  ck_free(fn);
+
+
   /* And now, for some finishing touches. */
 
   fn = alloc_printf("%s/.cur_input", out_dir);
@@ -5524,6 +5741,351 @@ static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
 }
 
 /**
+ * Replace every occurrence of old words to new word in the string.
+ */
+char* replaceWord(const char* s, const char* oldW, const char* newW) 
+{ 
+  char* result; 
+  int i, cnt = 0; 
+  int newWlen = strlen(newW); 
+  int oldWlen = strlen(oldW); 
+
+  // Counting the number of times old word 
+  // occur in the string 
+  for (i = 0; s[i] != '\0'; i++) { 
+    if (strstr(&s[i], oldW) == &s[i]) { 
+      cnt++; 
+
+      // Jumping to index after the old word. 
+      i += oldWlen - 1; 
+    } 
+  } 
+
+  // Making new string of enough length 
+  result = (char*)malloc(i + cnt * (newWlen - oldWlen) + 1); 
+
+  i = 0; 
+  while (*s) { 
+    // compare the substring with the result 
+    if (strstr(s, oldW) == s) { 
+      strcpy(&result[i], newW); 
+      i += newWlen; 
+      s += oldWlen; 
+    } 
+    else
+      result[i++] = *s++; 
+  } 
+
+  result[i] = '\0'; 
+  return result; 
+}
+
+static char* llm_result = NULL; // Global variable for LLM result
+
+/**
+ * Callback function for curl_easy_perform()
+ * 
+ * It parse the JSON response and store the result in llm_result.
+ */
+static u64 write_str(void* content, u64 size, u64 nmemb, void* userp) {
+  u64 realsize=size*nmemb;
+  char* result=(char*)content;
+  llm_result=(char*)userp;
+  return realsize;
+}
+
+/**
+ * Generate input by using LLM
+ * 
+ * It uses GPT-4 model to generate input.
+ */
+u8* gen_llm_input(struct queue_entry *good_q1, struct queue_entry *good_q2, struct queue_entry *bad_q1, struct queue_entry *bad_q2) {
+  u8* good_input_1, * good_input_2, * bad_input_1, * bad_input_2;
+  good_input_1 = NULL;
+  FILE *fp;
+  if (good_q1 != NULL) {
+    good_input_1 = ck_alloc(good_q1->len+1);
+    fp = fopen(good_q1->fname, "rb");
+    fread(good_input_1, 1, good_q1->len, fp);
+    fclose(fp);
+    good_input_1=replaceWord(good_input_1, "\n", "\\n"); // Replace newline to "\\n" in json
+    good_input_1=replaceWord(good_input_1, "\"", "\\\""); // Replace " to \" in json
+    good_input_1=replaceWord(good_input_1, "\t", "    "); // Replace " to \" in json
+  }
+  if (good_q2 != NULL) {
+    good_input_2 = ck_alloc(good_q2->len+1);
+    fp = fopen(good_q2->fname, "rb");
+    fread(good_input_2, 1, good_q2->len, fp);
+    fclose(fp);
+    good_input_2=replaceWord(good_input_2, "\n", "\\n");
+    good_input_2=replaceWord(good_input_2, "\"", "\\\"");
+    good_input_2=replaceWord(good_input_2, "\t", "    ");
+  }
+  if (bad_q1 != NULL) {
+    bad_input_1 = ck_alloc(bad_q1->len+1);
+    fp = fopen(bad_q1->fname, "rb");
+    fread(bad_input_1, 1, bad_q1->len, fp);
+    fclose(fp);
+    bad_input_1=replaceWord(bad_input_1, "\n", "\\n");
+    bad_input_1=replaceWord(bad_input_1, "\"", "\\\"");
+    bad_input_1=replaceWord(bad_input_1, "\t", "    ");
+  }
+  if (bad_q2 != NULL) {
+    bad_input_2 = ck_alloc(bad_q2->len+1);
+    fp = fopen(bad_q2->fname, "rb");
+    fread(bad_input_2, 1, bad_q2->len, fp);
+    fclose(fp);
+    bad_input_2=replaceWord(bad_input_2, "\n", "\\n");
+    bad_input_2=replaceWord(bad_input_2, "\"", "\\\"");
+    bad_input_2=replaceWord(bad_input_2, "\t", "    ");
+  }
+
+  u8* sys_prompt="You are the best software engineer.\\n"
+"You will take some text inputs for a C program.\\n"
+"Generate an input seed for my fuzzer that generates an input that has new program state when program crashed.\\n";
+  u8 user_prompt[40000];
+
+  // header
+  struct curl_slist* hs=NULL;
+  hs=curl_slist_append(hs,"Content-Type: application/json");
+  char* openAIKey=getenv("OPENAI_API_KEY");
+  if (!openAIKey) {
+      FATAL("OPENAI_API_KEY not set!");
+      exit(1);
+  }
+  u8 authHeader[200];
+  sprintf(authHeader,"Authorization: Bearer %s",openAIKey);
+  hs=curl_slist_append(hs,authHeader);
+
+  // TODO: Create user prompt
+  if (good_input_1!=NULL && bad_input_1!=NULL) {
+    sprintf(user_prompt,"Below is the inputs for %s program that are helpful to generate new program states or not. Please generate a new program input that can generate unique program states.\\n\\n"
+      "* Inputs that contributes to generate unique program states:\\n"
+      "1.\\n```\\n%s\\n```\\n2.\\n```\\n%s\\n```\\n\\n"
+      "* Inputs that does NOT contribute to generate unique program states:\\n"
+      "1.\\n```\\n%s\\n```\\n2.\\n```\\n%s\\n```\\n\\n"
+      "Please follow the rules below:\\n"
+      "1. Do NOT give any description.\\n"
+      "2. Give me the new inputs ONLY between ``` and ```.\\n"
+      "3. Just generate ONE input. Do not generate multiple inputs.\\n"
+      "4. New program input should follow its own input format.\\n"
+      "5. New program input should occur crash.",
+    binary_name,good_input_1,good_input_2,bad_input_1,bad_input_2);
+  }
+  else if (good_input_1!=NULL) {
+    sprintf(user_prompt,"Below is the inputs for %s program that are helpful to generate new program states. Please generate a new program input that can generate unique program states.\\n\\n"
+      "* Inputs that contributes to generate unique program states:\\n"
+      "1.\\n```\\n%s\\n```\\n2.\\n```\\n%s\\n```\\n\\n"
+      "Please follow the rules below:\\n"
+      "1. Do NOT give any description.\\n"
+      "2. Give me the new inputs ONLY between ``` and ```.\\n"
+      "3. Just generate ONE input. Do not generate multiple inputs.\\n"
+      "4. New program input should follow its own input format.\\n"
+      "5. New program input should occur crash.",
+    binary_name,good_input_1,good_input_2);
+  }
+  else if (bad_input_1!=NULL) {
+    sprintf(user_prompt,"Below is the inputs for %s program that are NOT helpful to generate new program states. Please generate a new program input that can generate unique program states.\\n\\n"
+      "* Inputs that does NOT contribute to generate unique program states:\\n"
+      "1.\\n```\\n%s\\n```\\n2.\\n```\\n%s\\n```\\n\\n"
+      "Please follow the rules below:\\n"
+      "1. Do NOT give any description.\\n"
+      "2. Give me the new inputs ONLY between ``` and ```.\\n"
+      "3. Just generate ONE input. Do not generate multiple inputs.\\n"
+      "4. New program input should follow its own input format.\\n"
+      "5. New program input should occur crash.\\n",
+    binary_name,bad_input_1,bad_input_2);
+  }
+  else {
+    FATAL("Both good and bad inputs are NULL during LLM.");
+  }
+/*
+Below is the inputs for libxml2 program that generate new program states or not. Please generate a new program input that can generate unique program states.
+
+* Inputs that contributes to generate unique program states:
+1.
+```
+<?xml version="1.0" encoding="utf-8"?>
+<!--  Source Code For Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+<org.moz.gecko.home.TwoLageRow xmlns:android="http://schemas.android.com/apk/res/android"
+          le="@style/Widget.RemoteTabsItemView"
+                                       android:layout_h="match_parent"
+                                       android:ut_ht="@dimen/page_row_height"
+                                       android:minHeight="@dimen/page_row_height"/>
+```
+2.
+```
+<?xml version="1.0" encoding="utf-8"?>
+<!--  Source Code For Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+<shape xmlns:android="http://schemas.android.com/apk/res/and"
+       android:shape="rectangle">
+
+     <s android:color="@android:color/transparent"/>
+
+</shape>
+```
+
+* Inputs that does NOT contribute to generate unique program states:
+1.
+```
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+Description: Ensure unknown NS element in atom:author doesn't cause exception
+Expect: var mCService = Components.classes['@mozilla.org/consoleservice;1'].getService(Components.interfaces.nsIConsoleService); var msg = mCService.getMessageArray()[0]; if(msg){msg = msg.message}; ((msg + "").indexOf("prefix has no properties") == -1);
+-->
+<feed xmlns="http://www.w3.org/2005/Atom">
+
+  <author>
+<name>Saby</name>
+    <method xmlns="http://www.intertwingly.net/blog/">excerpt</method>
+    <email>rubys@intertwingly.net</email>
+    <uri>.</uri>
+  </author>
+
+</feed>
+```
+2.
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html
+   PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+   "xhttransitional.dtd">
+<html xmlns='http://www.w3.org/1999/xhtml'>
+<head>
+<title>NIST DOest - BaseFont</title>
+</head>
+<body onload="parloadComplete()">
+<font color="#000000" face="arial,h" size="4">Test Tables</font>
+</body>
+</html>
+```
+
+Please follow the rules below:
+1. Do NOT give any description.
+2. Give me the new inputs ONLY between ``` and ```.
+3. Just generate ONE input. Do not generate multiple inputs.
+4. New program input should follow its own input format.
+5. New program input should occur crash.
+*/
+
+  // Create json data
+  u8 msg[41000];
+  sprintf(msg,"{"
+    "\"model\": \"gpt-4o\",\n"
+    "\"messages\": [\n"
+    "  {\n"
+    "    \"role\": \"developer\",\n"
+    "    \"content\": \"%s\"\n"
+    "  },\n"
+    "  {\n"
+    "    \"role\": \"user\",\n"
+    "    \"content\": \"%s\"\n"
+    "  }\n"
+    "]\n"
+  "}\n",sys_prompt,user_prompt);
+
+  SAYF("%s\n",msg);
+  
+  // Set options
+  curl_easy_setopt(curl,CURLOPT_URL,"https://api.openai.com/v1/chat/completions");
+  curl_easy_setopt(curl,CURLOPT_POST,1L); // post
+  curl_easy_setopt(curl,CURLOPT_POSTFIELDS,msg); // data
+  curl_easy_setopt(curl,CURLOPT_HTTPHEADER,hs); // header
+  curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,write_str); // callback
+  char openai_output[1000];
+  curl_easy_setopt(curl,CURLOPT_WRITEDATA,openai_output); // callback data
+  // Perform request
+  CURLcode res=curl_easy_perform(curl);
+  curl_slist_free_all(hs);
+  ck_free(good_input_1);
+  ck_free(good_input_2);
+  ck_free(bad_input_1);
+  ck_free(bad_input_2);
+  if (res!=CURLE_OK) {
+      FATAL("curl_easy_perform() failed: %s",curl_easy_strerror(res));
+  }
+  else {
+      char* result=llm_result;
+      return result;
+  }
+}
+
+/**
+ * Execute LLM Python script
+ * 
+ * It executes the LLM Python script asynchrously.
+ * Note that this function will only execute the script, and not generate new inputs.
+ * To get the new input, use get_llm_input().
+ */
+void run_llm_script(struct queue_entry *good_q1, struct queue_entry *good_q2, struct queue_entry *bad_q1, struct queue_entry *bad_q2) {
+
+  // Add file to out_dir/cludafl/good, out_dir/cludafl/bad (link)
+  if (good_q1 != NULL) {
+    total_llm_input_cnt++;
+    char* good_input_1 = alloc_printf("%s/cludafl/good/good-%llu", out_dir, total_llm_input_cnt);
+    link_or_copy(good_q1->fname, good_input_1);
+    ck_free(good_input_1);
+  }
+  if (good_q2 != NULL) {
+    total_llm_input_cnt++;
+    char* good_input_2 = alloc_printf("%s/cludafl/good/good-%llu", out_dir, total_llm_input_cnt);
+    link_or_copy(good_q2->fname, good_input_2);
+    ck_free(good_input_2);
+  }
+  if (bad_q1 != NULL) {
+    total_llm_input_cnt++;
+    char* bad_input_1 = alloc_printf("%s/cludafl/bad/bad-%llu", out_dir, total_llm_input_cnt);
+    link_or_copy(bad_q1->fname, bad_input_1); // atomic
+    ck_free(bad_input_1);
+  }
+  if (bad_q2 != NULL) {
+    total_llm_input_cnt++;
+    char* bad_input_2 = alloc_printf("%s/cludafl/bad/bad-%llu", out_dir, total_llm_input_cnt);
+    link_or_copy(bad_q2->fname, bad_input_2); // atomic
+    ck_free(bad_input_2);
+  }
+}
+
+void get_new_input_from_llm(char **use_argv) {
+  // Get new inputs from out_dir/cludafl/queue if exists
+  u8 *llm_queue_dir_name = alloc_printf("%s/cludafl/queue", out_dir);
+  DIR *llm_queue_dir = opendir(llm_queue_dir_name);
+  if (!llm_queue_dir) {
+    FATAL("Failed to open directory %s", llm_queue_dir_name);
+  }
+  struct dirent *llm_queue_entry;
+  while ((llm_queue_entry = readdir(llm_queue_dir)) != NULL) {
+    if (llm_queue_entry->d_name[0] == '.') {
+      continue;
+    }
+    u8 *full_file_path = alloc_printf("%s/%s", llm_queue_dir_name, llm_queue_entry->d_name);
+    struct stat file_stat;
+    if (stat((char *)full_file_path, &file_stat) == -1) {
+      ck_free(full_file_path);
+      continue;
+    }
+    off_t file_size = file_stat.st_size;
+    // Make hard link to out_dir/queue
+    u8 *new_fn = alloc_printf("%s/queue/id:%06u,orig:%s", out_dir, vector_size(queue_entry_id_vec), llm_queue_entry->d_name);
+    link_or_copy(full_file_path, new_fn);
+    add_to_queue(new_fn, file_size, 0, 0);
+    LOGF("[llm] [new] [id %d] [size %ld] [time %llu]\n", queue_last->entry_id, file_size, get_cur_time() - start_time);
+    // Run dry_run
+    perform_dry_run_single(use_argv, queue_last);
+    remove(full_file_path);
+    ck_free(full_file_path);
+  }
+  closedir(llm_queue_dir);
+  ck_free(llm_queue_dir_name);
+}
+
+/**
  * Select an input with original DAFL
  */
 struct queue_entry *select_next_dafl(void) {
@@ -5645,8 +6207,68 @@ struct queue_entry *select_next(void) {
       return select_next_random();
     case SELECT_CLUSTER:
       return select_next_cluster_dafl();
-    case SELECT_MAB:
+    case SELECT_MAB: {
+      if (use_llm) {
+        u64 global_inter_num = queue_u64_diff(mut_tracker_global->inter_queue, 5);
+        struct queue_entry *good_first, *good_second, *bad_first, *bad_second;
+        good_first = good_second = bad_first = bad_second = NULL;
+        u64 max_input_len = 8192;
+        if (global_inter_num == 0 && total_selections > 5) {
+          // Generate new input with LLM
+          for (int i = 0; i < vector_size(queue_entry_id_vec); i++) {
+            struct queue_entry *q = vector_get(queue_entry_id_vec, i);
+            u64 inter_num = q->mut_tracker->inter_num;
+            if (q->len > max_input_len) {
+              continue;
+            }
+            if (inter_num > 0) {
+              if (!good_first) {
+                good_first = q;
+              } else if (!good_second) {
+                good_second = q;
+                if (good_first->mut_tracker->inter_num < good_second->mut_tracker->inter_num) {
+                  struct queue_entry *tmp = good_first;
+                  good_first = good_second;
+                  good_second = tmp;
+                }
+              } else {
+                if (q->mut_tracker->inter_num > good_first->mut_tracker->inter_num) {
+                  good_second = good_first;
+                  good_first = q;
+                } else if (q->mut_tracker->inter_num > good_second->mut_tracker->inter_num) {
+                  good_second = q;
+                }
+              }
+            } else {
+              if (q->mut_tracker->total_num > 0) {
+                if (!bad_first) {
+                  bad_first = q;
+                } else if (!bad_second) {
+                  bad_second = q;
+                  if (bad_first->mut_tracker->total_num < bad_second->mut_tracker->total_num) {
+                    struct queue_entry *tmp = bad_first;
+                    bad_first = bad_second;
+                    bad_second = tmp;
+                  }
+                } else {
+                  if (q->mut_tracker->total_num > bad_first->mut_tracker->total_num) {
+                    bad_second = bad_first;
+                    bad_first = q;
+                  } else if (q->mut_tracker->total_num > bad_second->mut_tracker->total_num) {
+                    bad_second = q;
+                  }
+                }
+              }
+            }
+          }
+          // Read to buffer good_first->len, good_second->len, bad_first->len, bad_second->len
+          // u8* result = gen_llm_input(good_first, good_second, bad_first, bad_second);
+          run_llm_script(good_first, good_second, bad_first, bad_second);
+
+        }
+      }
       return select_next_mab();
+    }
     default:
       return NULL;
   }
@@ -8002,6 +8624,22 @@ EXP_ST void setup_dirs_fds(void) {
   if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
 
+  tmp = alloc_printf("%s/cludafl", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  tmp = alloc_printf("%s/cludafl/good", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  tmp = alloc_printf("%s/cludafl/bad", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  tmp = alloc_printf("%s/cludafl/queue", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+  
   /* Generally useful file descriptors. */
 
   dev_null_fd = open("/dev/null", O_RDWR);
@@ -8638,7 +9276,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:p:vs:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:p:vs:l")) > 0)
 
     switch (opt) {
 
@@ -8849,6 +9487,10 @@ int main(int argc, char** argv) {
         else FATAL("Unsupported strategy, it should be 'dafl', 'random', 'cluster', 'dafl_cluster', 'random_cluster' or 'mab");
         break;
 
+      case 'l':
+        use_llm=1;
+        break;
+
       default:
 
         usage(argv[0]);
@@ -8862,6 +9504,8 @@ int main(int argc, char** argv) {
 
   if (sync_id) fix_up_sync();
   init_cludafl();
+  curl_global_init(CURL_GLOBAL_ALL);
+  curl=curl_easy_init();
 
   if (!strcmp(in_dir, out_dir))
     FATAL("Input and output directories can't be the same");
@@ -8952,6 +9596,9 @@ int main(int argc, char** argv) {
 
   show_init_stats();
 
+  u8* bin_abspath = ck_strdup(use_argv[0]);
+  binary_name = strrchr(bin_abspath, '/') + 1; // Get the binary name
+
   write_stats_file(0, 0, 0);
   save_auto();
 
@@ -9028,6 +9675,9 @@ int main(int argc, char** argv) {
     //     queue_cur = queue_cur->next;
     // }
     queue_cur = select_next();
+    if (use_llm) {
+      get_new_input_from_llm(use_argv);
+    }
   }
 
   if (queue_cur) show_stats();
@@ -9064,6 +9714,8 @@ stop_fuzzing:
 
   fclose(plot_file);
   destroy_cludafl();
+  curl_easy_cleanup(curl);
+  curl_global_cleanup();
   destroy_queue();
   destroy_extras();
   ck_free(target_path);
