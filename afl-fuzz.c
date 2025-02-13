@@ -5990,7 +5990,6 @@ void get_new_input_from_llm(char **use_argv) {
     link_or_copy(full_file_path, new_fn);
     remove(full_file_path);
     ck_free(full_file_path);
-    LOGF("[llm] [new] [id %d] [size %ld] [time %llu]\n", queue_last->entry_id, file_size, get_cur_time() - start_time);
     // Run dry_run
     u8 *buffer = ck_alloc(file_size + 1);
     FILE *f = fopen(new_fn, "rb");
@@ -6008,6 +6007,7 @@ void get_new_input_from_llm(char **use_argv) {
     if (fault == FAULT_NONE || fault == FAULT_CRASH) {
       add_to_queue(new_fn, file_size, 0, 0);
       perform_dry_run_single(use_argv, queue_last);
+      LOGF("[llm] [new] [id %d] [size %ld] [res %d] [time %llu]\n", queue_last->entry_id, file_size, fault, get_cur_time() - start_time);
     }
   }
   closedir(llm_queue_dir);
