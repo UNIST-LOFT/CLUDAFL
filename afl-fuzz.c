@@ -295,10 +295,14 @@ static struct mut_tracker *mut_tracker_global = NULL; // global mut tracker
 static u8 use_llm=0; // Use LLM
 static u8* binary_name;  // Name of binary
 static u64 total_llm_input_cnt = 0;
+static pid_t llm_pid = -1; // pid of llm python server
+static u64 prev_llm_input_time = 0;
 
 static struct hashmap *val_hashmap = NULL;
 
+#ifdef USE_CURL
 static CURL *curl = NULL;
+#endif
 
 /* Multi-armed bandit */
 static u8 is_interesting = 0;  // Reset and set to 1 in save_if_interesting()
@@ -3224,123 +3228,20 @@ static void perform_dry_run_single(char** argv, struct queue_entry *q) {
 
     case FAULT_NONE:
 
-      if (q == queue) check_map_coverage();
-
-      // if (crash_mode) FATAL("Test case '%s' does *NOT* crash", fn);
-
       break;
 
     case FAULT_TMOUT:
 
-      if (timeout_given) {
+      // If timeout, do not add to the queue
+      WARNF("Test case results in a timeout (skipping)");
+      q->cal_failed = CAL_CHANCES;
+      cal_failures++;
+      break;
 
-        /* The -t nn+ syntax in the command line sets timeout_given to '2' and
-            instructs afl-fuzz to tolerate but skip queue entries that time
-            out. */
-
-        if (timeout_given > 1) {
-          WARNF("Test case results in a timeout (skipping)");
-          q->cal_failed = CAL_CHANCES;
-          cal_failures++;
-          break;
-        }
-
-        SAYF("\n" cLRD "[-] " cRST
-              "The program took more than %u ms to process one of the initial test cases.\n"
-              "    Usually, the right thing to do is to relax the -t option - or to delete it\n"
-              "    altogether and allow the fuzzer to auto-calibrate. That said, if you know\n"
-              "    what you are doing and want to simply skip the unruly test cases, append\n"
-              "    '+' at the end of the value passed to -t ('-t %u+').\n", exec_tmout,
-              exec_tmout);
-
-        FATAL("Test case '%s' results in a timeout", fn);
-
-      } else {
-
-        SAYF("\n" cLRD "[-] " cRST
-              "The program took more than %u ms to process one of the initial test cases.\n"
-              "    This is bad news; raising the limit with the -t option is possible, but\n"
-              "    will probably make the fuzzing process extremely slow.\n\n"
-
-              "    If this test case is just a fluke, the other option is to just avoid it\n"
-              "    altogether, and find one that is less of a CPU hog.\n", exec_tmout);
-
-        FATAL("Test case '%s' results in a timeout", fn);
-
-      }
 
     case FAULT_CRASH:
 
       break;
-
-      if (skip_crashes) {
-        WARNF("Test case results in a crash (skipping)");
-        q->cal_failed = CAL_CHANCES;
-        cal_failures++;
-        break;
-      }
-
-      if (mem_limit) {
-
-        SAYF("\n" cLRD "[-] " cRST
-              "Oops, the program crashed with one of the test cases provided. There are\n"
-              "    several possible explanations:\n\n"
-
-              "    - The test case causes known crashes under normal working conditions. If\n"
-              "      so, please remove it. The fuzzer should be seeded with interesting\n"
-              "      inputs - but not ones that cause an outright crash.\n\n"
-
-              "    - The current memory limit (%s) is too low for this program, causing\n"
-              "      it to die due to OOM when parsing valid files. To fix this, try\n"
-              "      bumping it up with the -m setting in the command line. If in doubt,\n"
-              "      try something along the lines of:\n\n"
-
-#ifdef RLIMIT_AS
-              "      ( ulimit -Sv $[%llu << 10]; /path/to/binary [...] <testcase )\n\n"
-#else
-              "      ( ulimit -Sd $[%llu << 10]; /path/to/binary [...] <testcase )\n\n"
-#endif /* ^RLIMIT_AS */
-
-              "      Tip: you can use http://jwilk.net/software/recidivm to quickly\n"
-              "      estimate the required amount of virtual memory for the binary. Also,\n"
-              "      if you are using ASAN, see %s/notes_for_asan.txt.\n\n"
-
-#ifdef __APPLE__
-
-              "    - On MacOS X, the semantics of fork() syscalls are non-standard and may\n"
-              "      break afl-fuzz performance optimizations when running platform-specific\n"
-              "      binaries. To fix this, set AFL_NO_FORKSRV=1 in the environment.\n\n"
-
-#endif /* __APPLE__ */
-
-              "    - Least likely, there is a horrible bug in the fuzzer. If other options\n"
-              "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n",
-              DMS(mem_limit << 20), mem_limit - 1, doc_path);
-
-      } else {
-
-        SAYF("\n" cLRD "[-] " cRST
-              "Oops, the program crashed with one of the test cases provided. There are\n"
-              "    several possible explanations:\n\n"
-
-              "    - The test case causes known crashes under normal working conditions. If\n"
-              "      so, please remove it. The fuzzer should be seeded with interesting\n"
-              "      inputs - but not ones that cause an outright crash.\n\n"
-
-#ifdef __APPLE__
-
-              "    - On MacOS X, the semantics of fork() syscalls are non-standard and may\n"
-              "      break afl-fuzz performance optimizations when running platform-specific\n"
-              "      binaries. To fix this, set AFL_NO_FORKSRV=1 in the environment.\n\n"
-
-#endif /* __APPLE__ */
-
-              "    - Least likely, there is a horrible bug in the fuzzer. If other options\n"
-              "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n");
-
-      }
-
-      FATAL("Test case '%s' results in a crash", fn);
 
     case FAULT_ERROR:
 
@@ -5740,6 +5641,7 @@ static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
 
 }
 
+#ifdef USE_CURL
 /**
  * Replace every occurrence of old words to new word in the string.
  */
@@ -6015,6 +5917,7 @@ Please follow the rules below:
       return result;
   }
 }
+#endif
 
 /**
  * Execute LLM Python script
@@ -6025,31 +5928,42 @@ Please follow the rules below:
  */
 void run_llm_script(struct queue_entry *good_q1, struct queue_entry *good_q2, struct queue_entry *bad_q1, struct queue_entry *bad_q2) {
 
-  // Add file to out_dir/cludafl/good, out_dir/cludafl/bad (link)
+  if (get_cur_time() - prev_llm_input_time < 10000) {
+    return; // Do not run LLM script if it was executed within 1 second.
+  }
+  // Add file to out_dir/cludafl/good, out_dir/cludafl/bad (link)  
+  u8* llm_input_file = alloc_printf("%s/cludafl/input-%llu", out_dir, total_llm_input_cnt);
+  FILE *fp = fopen(llm_input_file, "w");
   if (good_q1 != NULL) {
     total_llm_input_cnt++;
     char* good_input_1 = alloc_printf("%s/cludafl/good/good-%llu", out_dir, total_llm_input_cnt);
     link_or_copy(good_q1->fname, good_input_1);
+    fprintf(fp, "good1\t%s\n", good_input_1);
     ck_free(good_input_1);
   }
   if (good_q2 != NULL) {
     total_llm_input_cnt++;
     char* good_input_2 = alloc_printf("%s/cludafl/good/good-%llu", out_dir, total_llm_input_cnt);
     link_or_copy(good_q2->fname, good_input_2);
+    fprintf(fp, "good2\t%s\n", good_input_2);
     ck_free(good_input_2);
   }
   if (bad_q1 != NULL) {
     total_llm_input_cnt++;
     char* bad_input_1 = alloc_printf("%s/cludafl/bad/bad-%llu", out_dir, total_llm_input_cnt);
     link_or_copy(bad_q1->fname, bad_input_1); // atomic
+    fprintf(fp, "bad1\t%s\n", bad_input_1);
     ck_free(bad_input_1);
   }
   if (bad_q2 != NULL) {
     total_llm_input_cnt++;
     char* bad_input_2 = alloc_printf("%s/cludafl/bad/bad-%llu", out_dir, total_llm_input_cnt);
     link_or_copy(bad_q2->fname, bad_input_2); // atomic
+    fprintf(fp, "bad2\t%s\n", bad_input_2);
     ck_free(bad_input_2);
   }
+  fclose(fp);
+  prev_llm_input_time = get_cur_time();
 }
 
 void get_new_input_from_llm(char **use_argv) {
@@ -6074,12 +5988,27 @@ void get_new_input_from_llm(char **use_argv) {
     // Make hard link to out_dir/queue
     u8 *new_fn = alloc_printf("%s/queue/id:%06u,orig:%s", out_dir, vector_size(queue_entry_id_vec), llm_queue_entry->d_name);
     link_or_copy(full_file_path, new_fn);
-    add_to_queue(new_fn, file_size, 0, 0);
-    LOGF("[llm] [new] [id %d] [size %ld] [time %llu]\n", queue_last->entry_id, file_size, get_cur_time() - start_time);
-    // Run dry_run
-    perform_dry_run_single(use_argv, queue_last);
     remove(full_file_path);
     ck_free(full_file_path);
+    LOGF("[llm] [new] [id %d] [size %ld] [time %llu]\n", queue_last->entry_id, file_size, get_cur_time() - start_time);
+    // Run dry_run
+    u8 *buffer = ck_alloc(file_size + 1);
+    FILE *f = fopen(new_fn, "rb");
+    if (!f) {
+      FATAL("Failed to open '%s'", new_fn);
+    }
+    if (fread(buffer, 1, file_size, f) != file_size) {
+      FATAL("Short read from '%s'", new_fn);
+    }
+    // Run seed
+    write_to_testcase(buffer, file_size);
+    u8 fault = run_target(use_argv, exec_tmout);
+    ck_free(buffer);
+    // If target timeout or other error, skip this input
+    if (fault == FAULT_NONE || fault == FAULT_CRASH) {
+      add_to_queue(new_fn, file_size, 0, 0);
+      perform_dry_run_single(use_argv, queue_last);
+    }
   }
   closedir(llm_queue_dir);
   ck_free(llm_queue_dir_name);
@@ -9504,8 +9433,10 @@ int main(int argc, char** argv) {
 
   if (sync_id) fix_up_sync();
   init_cludafl();
+#ifdef USE_CURL
   curl_global_init(CURL_GLOBAL_ALL);
   curl=curl_easy_init();
+#endif
 
   if (!strcmp(in_dir, out_dir))
     FATAL("Input and output directories can't be the same");
@@ -9598,6 +9529,25 @@ int main(int argc, char** argv) {
 
   u8* bin_abspath = ck_strdup(use_argv[0]);
   binary_name = strrchr(bin_abspath, '/') + 1; // Get the binary name
+
+  // Fork the GPT process
+  pid_t fork_id=fork();
+  if (fork_id == -1) {
+    PFATAL("Failed to fork GPT process");
+  }
+  else if (fork_id==0) {
+    // Execute GPT process
+    u8* gpt_cmd=alloc_printf("python3 %s/gpt.py %s %s", getenv("CLUDAFL"), binary_name, out_dir);
+    int return_code=system(gpt_cmd);
+    if (return_code != 0) {
+      FATAL("Failed to execute GPT process");
+    }
+    exit(0);
+  }
+  else {
+    // Parent process
+    llm_pid=fork_id;
+  }
 
   write_stats_file(0, 0, 0);
   save_auto();
@@ -9714,12 +9664,15 @@ stop_fuzzing:
 
   fclose(plot_file);
   destroy_cludafl();
+#ifdef USE_CURL
   curl_easy_cleanup(curl);
   curl_global_cleanup();
+#endif
   destroy_queue();
   destroy_extras();
   ck_free(target_path);
   ck_free(sync_id);
+  kill(llm_pid, SIGTERM);
 
   alloc_report();
 

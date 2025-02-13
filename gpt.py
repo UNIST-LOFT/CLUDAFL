@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.8
+#!/usr/bin/env python3
 
 import argparse
 import json
@@ -18,8 +18,7 @@ args.add_argument('cludafl_path',type=str,help='Path to CLUDAFL out dir')
 
 argv=args.parse_args()
 
-good_path=f'{argv.cludafl_path}/cludafl/good'
-bad_path=f'{argv.cludafl_path}/cludafl/bad'
+prev_input_path=f'{argv.cludafl_path}/cludafl/input-'
 new_input_dir=f'{argv.cludafl_path}/cludafl/queue'
 tmp_input_name = f'{argv.cludafl_path}/cludafl/.tmp_input' # CLUDAFL ignores files starting with '.'
 
@@ -34,33 +33,43 @@ class InputDetector(events.FileSystemEventHandler):
         pass
 
     def on_created(self,event:events.FileCreatedEvent):
+        if not event.src_path.startswith(prev_input_path):
+            return
         print(f'{event.src_path} is created.',file=sys.stderr)
         if InputDetector.dafl_generating:
             # Other detector is already handling
             return
         
         InputDetector.dafl_generating=True
-        sleep(1) # Wait until every files are created by CLUDAFL
+        sleep(.5)
         
+        good_input_path,bad_input_path=[],[]
+        with open(event.src_path,'r') as f:
+            for line in f:
+                if line.startswith('good'):
+                    good_input_path.append(line.split('\t')[1].strip())
+                elif line.startswith('bad'):
+                    bad_input_path.append(line.split('\t')[1].strip())
+
         # Read the given inputs from files
         good_inputs:List[str]=[]
         bad_inputs:List[str]=[]
-        good_cnt = 0
-        for file in os.listdir(good_path):
-            good_cnt += 1
-            if good_cnt > 2:
-                break
-            with open(f'{good_path}/{file}','r') as f:
-                good_inputs.append(f.read())
-            os.remove(f'{good_path}/{file}')
-        bad_cnt = 0
-        for file in os.listdir(bad_path):
-            bad_cnt += 1
-            if bad_cnt > 2:
-                break
-            with open(f'{bad_path}/{file}','r') as f:
-                bad_inputs.append(f.read())
-            os.remove(f'{bad_path}/{file}')
+        for file in good_input_path:
+            print(f'good file: {file}',file=sys.stderr)
+            try:
+                with open(file,'r') as f:
+                    good_inputs.append(f.read())
+            except:
+                print(f'Error: {file} is not a file or contains invalid character',file=sys.stderr)
+            os.remove(file)
+        for file in bad_input_path:
+            print(f'bad file: {file}',file=sys.stderr)
+            try:
+                with open(file,'r') as f:
+                    bad_inputs.append(f.read())
+            except:
+                print(f'Error: {file} is not a file or contains invalid character',file=sys.stderr)
+            os.remove(file)
         
         # Replace special characters for JSON
         for i,input in enumerate(good_inputs.copy()):
@@ -128,14 +137,15 @@ class InputDetector(events.FileSystemEventHandler):
             'Content-Type':'application/json',
             'Authorization':f'Bearer {os.getenv("OPENAI_API_KEY")}'
         },data=data)
-
+        res=req.json()
+        res_output=res['choices'][0]['message']['content'].replace('```\n','').replace('\n```','')
         # Generate new input file in temporary directory and make a symbolic link
         with open(tmp_input_name,'w') as f:
-            f.write(req.json()['choices'][0]['message']['content'].replace('```\n','').replace('\n```',''))
-        if os.path.exists(f'{new_input_dir}/.tmp_input'):
-            os.remove(f'{new_input_dir}/.tmp_input')
-        os.symlink(tmp_input_name, f'{new_input_dir}/.tmp_input')
-        print('New input is generated.',file=sys.stderr)
+            f.write(res_output)
+        if os.path.exists(f'{new_input_dir}/tmp_input'):
+            os.remove(f'{new_input_dir}/tmp_input')
+        os.symlink(tmp_input_name, f'{new_input_dir}/tmp_input')
+        print(f'New input is generated:\n{res_output}',file=sys.stderr)
 
         InputDetector.dafl_generating=False
 
@@ -146,8 +156,8 @@ if __name__=='__main__':
         exit(0)
 
     signal.signal(signal.SIGINT,stop_signal)
+    signal.signal(signal.SIGTERM,stop_signal)
     observer=observers.Observer()
-    observer.schedule(InputDetector(),good_path)
-    observer.schedule(InputDetector(),bad_path)
+    observer.schedule(InputDetector(),f'{argv.cludafl_path}/cludafl')
     observer.start()
     observer.join()
