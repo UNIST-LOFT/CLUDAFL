@@ -21,6 +21,7 @@ argv=args.parse_args()
 prev_input_path=f'{argv.cludafl_path}/cludafl/input-'
 new_input_dir=f'{argv.cludafl_path}/cludafl/queue'
 tmp_input_name = f'{argv.cludafl_path}/cludafl/.tmp_input' # CLUDAFL ignores files starting with '.'
+tmp_input_count = 0
 
 # Watchdog watches the directory for new files
 # If new files are created, it means that CLUDAFL wants to generate a new input from LLM
@@ -42,6 +43,8 @@ class InputDetector(events.FileSystemEventHandler):
         
         InputDetector.dafl_generating=True
         sleep(.5)
+        global tmp_input_count
+        tmp_input_count += 1
         
         good_input_path,bad_input_path=[],[]
         with open(event.src_path,'r') as f:
@@ -57,31 +60,34 @@ class InputDetector(events.FileSystemEventHandler):
         for file in good_input_path:
             print(f'good file: {file}',file=sys.stderr)
             try:
-                with open(file,'r') as f:
-                    good_inputs.append(f.read())
-            except:
-                print(f'Error: {file} is not a file or contains invalid character',file=sys.stderr)
+                with open(file,'rb') as f:
+                    input=f.read()
+                    input=input.decode('utf-8',errors='ignore')
+                    input=input.replace('\n','\\n')
+                    input=input.replace('\r','\\r')
+                    input=input.replace('\x00','\\x')
+                    input=input.replace('"','\\"')
+                    input=input.replace('\t','    ')
+                    json.loads('["'+input+'"]') # Check if input is valid JSON
+                    good_inputs.append(input)
+            except Exception as e:
+                print(f'Error: {file} is not a file or contains invalid character: {e}',file=sys.stderr)
             os.remove(file)
         for file in bad_input_path:
             print(f'bad file: {file}',file=sys.stderr)
             try:
-                with open(file,'r') as f:
-                    bad_inputs.append(f.read())
-            except:
-                print(f'Error: {file} is not a file or contains invalid character',file=sys.stderr)
+                with open(file,'rb') as f:
+                    input=f.read()
+                    input=input.decode('utf-8',errors='ignore')
+                    input=input.replace('\n','\\n')
+                    input=input.replace('\r','\\r')
+                    input=input.replace('"','\\"')
+                    input=input.replace('\t','    ')
+                    json.loads('["'+input+'"]') # Check if input is valid JSON
+                    bad_inputs.append(input)
+            except Exception as e:
+                print(f'Error: {file} is not a file or contains invalid character: {e}',file=sys.stderr)
             os.remove(file)
-        
-        # Replace special characters for JSON
-        for i,input in enumerate(good_inputs.copy()):
-            input=input.replace('\n','\\n')
-            input=input.replace('"','\\"')
-            input=input.replace('\t','    ')
-            good_inputs[i]=input
-        for i,input in enumerate(bad_inputs.copy()):
-            input=input.replace('\n','\\n')
-            input=input.replace('"','\\"')
-            input=input.replace('\t','    ')
-            bad_inputs[i]=input
 
         user_msg=f"Below is the inputs for {argv.program} program "
         if len(good_inputs)>0 and len(bad_inputs)>0:
@@ -114,38 +120,31 @@ class InputDetector(events.FileSystemEventHandler):
         if 'xml' in argv.program: # For libxml2
             user_msg+="\\n6. New program input should be a valid XML format."
             
-        data='{'+ \
-            '"model":"gpt-4o",'+ \
-            '"messages":'+ \
-            '['+ \
-                '{'+ \
-                    '"role":"developer",'+ \
-                    '"content":"You are the best software engineer.\\n'+ \
+        data={"model":"gpt-4o",
+            "messages":[{"role":"developer",
+                    "content":"You are the best software engineer.\\n"+ \
                         'You will take some text inputs for a C program.\\n'+ \
-                        'Generate an input seed for my fuzzer that generates an input that has new program state when program crashed.\\n"'+ \
-                '},'+ \
-                '{'+ \
-                    '"role":"user",'+ \
-                    f'"content":"{user_msg}"'+ \
-                '}'+ \
-            ']'+ \
-        '}'
+                        'Generate an input seed for my fuzzer that generates an input that has new program state when program crashed.\\n'
+                },
+                {
+                    "role":"user",
+                    "content":f"{user_msg}"
+                }
+            ]
+        }
         print(data,file=sys.stderr)
-        json.loads(data) # Check if data is valid JSON
 
         req=requests.post('https://api.openai.com/v1/chat/completions',headers={
             'Content-Type':'application/json',
             'Authorization':f'Bearer {os.getenv("OPENAI_API_KEY")}'
-        },data=data)
+        },data=json.dumps(data))
         res=req.json()
+        print(f'New input is generated:\n{res}',file=sys.stderr)
         res_output=res['choices'][0]['message']['content'].replace('```\n','').replace('\n```','')
         # Generate new input file in temporary directory and make a symbolic link
-        with open(tmp_input_name,'w') as f:
+        with open(f'{tmp_input_name}-{tmp_input_count}','w') as f:
             f.write(res_output)
-        if os.path.exists(f'{new_input_dir}/tmp_input'):
-            os.remove(f'{new_input_dir}/tmp_input')
-        os.symlink(tmp_input_name, f'{new_input_dir}/tmp_input')
-        print(f'New input is generated:\n{res_output}',file=sys.stderr)
+        os.link(f'{tmp_input_name}-{tmp_input_count}', f'{new_input_dir}/tmp_input-{tmp_input_count}')
 
         InputDetector.dafl_generating=False
 
