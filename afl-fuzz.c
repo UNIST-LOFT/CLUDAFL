@@ -297,6 +297,7 @@ static u8* binary_name;  // Name of binary
 static u64 total_llm_input_cnt = 0;
 static pid_t llm_pid = -1; // pid of llm python server
 static u64 prev_llm_input_time = 0;
+static u8 ignore_valuation = 0; // Ignore valuation
 
 static struct hashmap *val_hashmap = NULL;
 
@@ -2671,6 +2672,34 @@ static void write_with_gap(void* mem, u32 len, u32 skip_at, u32 skip_len) {
 
 }
 
+/* Helper function: link() if possible, copy otherwise. */
+
+static void link_or_copy(u8* old_path, u8* new_path) {
+
+  s32 i = link(old_path, new_path);
+  s32 sfd, dfd;
+  u8* tmp;
+
+  if (!i) return;
+
+  sfd = open(old_path, O_RDONLY);
+  if (sfd < 0) PFATAL("Unable to open '%s'", old_path);
+
+  dfd = open(new_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (dfd < 0) PFATAL("Unable to create '%s'", new_path);
+
+  tmp = ck_alloc(64 * 1024);
+
+  while ((i = read(sfd, tmp, 64 * 1024)) > 0)
+    ck_write(dfd, tmp, i, new_path);
+
+  if (i < 0) PFATAL("read() failed");
+
+  ck_free(tmp);
+  close(sfd);
+  close(dfd);
+
+}
 
 static void show_stats(void);
 
@@ -3301,17 +3330,25 @@ static void perform_dry_run(char** argv) {
     LOGF("[dry-run] [entry %d] [file %s] [hash %u] [dfg %u] [res %d] [prox %lld] [pre %lld]\n", q->entry_id, q->fname, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
 
     save_dry_run(save_file, q, q->exec_us, res);
-    u8 has_unique_memval = get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc());
-    if (has_unique_memval) {
-      mut_tracker_update_num(mut_tracker_global, 1);
-      mut_tracker_update_num(q->mut_tracker, 1);
-      mut_tracker_update_queue(q->mut_tracker);
-      fn = alloc_printf("%s/memory/input/%s-%d", out_dir, res == FAULT_NONE ? "pos" : "neg", hashmap_size(val_hashmap));
-      fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
-      if (fd < 0) PFATAL("Unable to create '%s'", fn);
-      ck_write(fd, use_mem, q->len, fn);
-      close(fd);
-      ck_free(fn);
+    if (ignore_valuation) {
+      if (check_target_covered()) {
+        u8* filename = alloc_printf("%s/cludafl/seeds/%s", out_dir, fn);
+        link_or_copy(q->fname, filename);
+        ck_free(filename);
+      }
+    } else {
+      u8 has_unique_memval = get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc());
+      if (has_unique_memval) {
+        mut_tracker_update_num(mut_tracker_global, 1);
+        mut_tracker_update_num(q->mut_tracker, 1);
+        mut_tracker_update_queue(q->mut_tracker);
+        fn = alloc_printf("%s/memory/input/%s-%d", out_dir, res == FAULT_NONE ? "pos" : "neg", hashmap_size(val_hashmap));
+        fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (fd < 0) PFATAL("Unable to create '%s'", fn);
+        ck_write(fd, use_mem, q->len, fn);
+        close(fd);
+        ck_free(fn);
+      }  
     }
 
     ck_free(use_mem);
@@ -3491,35 +3528,6 @@ static void perform_dry_run(char** argv) {
 
 }
 
-
-/* Helper function: link() if possible, copy otherwise. */
-
-static void link_or_copy(u8* old_path, u8* new_path) {
-
-  s32 i = link(old_path, new_path);
-  s32 sfd, dfd;
-  u8* tmp;
-
-  if (!i) return;
-
-  sfd = open(old_path, O_RDONLY);
-  if (sfd < 0) PFATAL("Unable to open '%s'", old_path);
-
-  dfd = open(new_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
-  if (dfd < 0) PFATAL("Unable to create '%s'", new_path);
-
-  tmp = ck_alloc(64 * 1024);
-
-  while ((i = read(sfd, tmp, 64 * 1024)) > 0)
-    ck_write(dfd, tmp, i, new_path);
-
-  if (i < 0) PFATAL("read() failed");
-
-  ck_free(tmp);
-  close(sfd);
-  close(dfd);
-
-}
 
 
 static void nuke_resume_dir(void);
@@ -3751,20 +3759,22 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   is_interesting = 0;
 
   if (check_valid_res(fault)) {
-    has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc());
-    is_interesting = has_unique_memval;
-    if (has_unique_memval) {
-      fn = alloc_printf("%s/memory/input/%s-%d", out_dir, fault == 0 ? "pos" : "neg", hashmap_size(val_hashmap));
-      fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
-      LOGF("[PacFuzz] [save_if_interesting] [seed %d] [inter %llu] [total %llu] [time %llu]\n", queue_cur ? queue_cur->entry_id : -1, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
-      if (fd < 0) PFATAL("Unable to create '%s'", fn);
-      ck_write(fd, mem, len, fn);
-      close(fd);
-      ck_free(fn);
-    } else {
-      u32 max_score = max_dfg_score();
-      if (max_score > queue_cur->dfg_max)
-        is_interesting = 1;
+    if (!ignore_valuation) {
+      has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc());
+      is_interesting = has_unique_memval;
+      if (has_unique_memval) {
+        fn = alloc_printf("%s/memory/input/%s-%d", out_dir, fault == 0 ? "pos" : "neg", hashmap_size(val_hashmap));
+        fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        LOGF("[PacFuzz] [save_if_interesting] [seed %d] [inter %llu] [total %llu] [time %llu]\n", queue_cur ? queue_cur->entry_id : -1, mut_tracker_global->inter_num, mut_tracker_global->total_num, get_cur_time() - start_time);
+        if (fd < 0) PFATAL("Unable to create '%s'", fn);
+        ck_write(fd, mem, len, fn);
+        close(fd);
+        ck_free(fn);
+      } else {
+        u32 max_score = max_dfg_score();
+        if (max_score > queue_cur->dfg_max)
+          is_interesting = 1;
+      }
     }
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
@@ -3788,6 +3798,15 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     add_to_queue(fn, len, 0, prox_score);
     LOGF("[seed] [seed %d] [new-entry %d] [prox %lld] [time %lld]\n", queue_cur->entry_id, queue_last->entry_id, prox_score, get_cur_time() - start_time);
+    
+    if (ignore_valuation) {
+      // CLUDAFL: Save run results if covered target
+      if (check_target_covered()) {
+        u8* save_filename = alloc_printf("%s/cludafl/seeds/id:%06u,%llu,%s", out_dir, queued_paths, prox_score, describe_op(hnb));
+        link_or_copy(fn, save_filename);
+        ck_free(save_filename);
+      }
+    }
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
@@ -4476,6 +4495,10 @@ static void maybe_delete_out_dir(void) {
   ck_free(fn);
 
   fn = alloc_printf("%s/memory", out_dir);
+  if (delete_files(fn, NULL)) goto dir_cleanup_failed;
+  ck_free(fn);
+
+  fn = alloc_printf("%s/cludafl/seeds", out_dir);
   if (delete_files(fn, NULL)) goto dir_cleanup_failed;
   ck_free(fn);
 
@@ -5931,6 +5954,7 @@ void run_llm_script(struct queue_entry *good_q1, struct queue_entry *good_q2, st
   if (get_cur_time() - prev_llm_input_time < 10000) {
     return; // Do not run LLM script if it was executed within 1 second.
   }
+  ACTF("Requesting LLM...");
   // Add file to out_dir/cludafl/good, out_dir/cludafl/bad (link)  
   u8* llm_input_file = alloc_printf("%s/cludafl/input-%llu", out_dir, total_llm_input_cnt);
   FILE *fp = fopen(llm_input_file, "w");
@@ -5938,6 +5962,7 @@ void run_llm_script(struct queue_entry *good_q1, struct queue_entry *good_q2, st
     total_llm_input_cnt++;
     char* good_input_1 = alloc_printf("%s/cludafl/good/good-%llu", out_dir, total_llm_input_cnt);
     link_or_copy(good_q1->fname, good_input_1);
+    ACTF("good1: %s", good_q1->fname);
     fprintf(fp, "good1\t%s\n", good_input_1);
     ck_free(good_input_1);
   }
@@ -5945,6 +5970,7 @@ void run_llm_script(struct queue_entry *good_q1, struct queue_entry *good_q2, st
     total_llm_input_cnt++;
     char* good_input_2 = alloc_printf("%s/cludafl/good/good-%llu", out_dir, total_llm_input_cnt);
     link_or_copy(good_q2->fname, good_input_2);
+    ACTF("good2: %s", good_q2->fname);
     fprintf(fp, "good2\t%s\n", good_input_2);
     ck_free(good_input_2);
   }
@@ -5952,6 +5978,7 @@ void run_llm_script(struct queue_entry *good_q1, struct queue_entry *good_q2, st
     total_llm_input_cnt++;
     char* bad_input_1 = alloc_printf("%s/cludafl/bad/bad-%llu", out_dir, total_llm_input_cnt);
     link_or_copy(bad_q1->fname, bad_input_1); // atomic
+    ACTF("bad1: %s", bad_q1->fname);
     fprintf(fp, "bad1\t%s\n", bad_input_1);
     ck_free(bad_input_1);
   }
@@ -5959,6 +5986,7 @@ void run_llm_script(struct queue_entry *good_q1, struct queue_entry *good_q2, st
     total_llm_input_cnt++;
     char* bad_input_2 = alloc_printf("%s/cludafl/bad/bad-%llu", out_dir, total_llm_input_cnt);
     link_or_copy(bad_q2->fname, bad_input_2); // atomic
+    ACTF("bad2: %s", bad_q2->fname);
     fprintf(fp, "bad2\t%s\n", bad_input_2);
     ck_free(bad_input_2);
   }
@@ -6005,6 +6033,7 @@ void get_new_input_from_llm(char **use_argv) {
     ck_free(buffer);
     // If target timeout or other error, skip this input
     if (fault == FAULT_NONE || fault == FAULT_CRASH) {
+      ACTF("Got new input from LLM!");
       add_to_queue(new_fn, file_size, 0, 0);
       perform_dry_run_single(use_argv, queue_last);
       LOGF("[llm] [new] [id %d] [size %ld] [res %d] [time %llu]\n", queue_last->entry_id, file_size, fault, get_cur_time() - start_time);
@@ -8557,6 +8586,10 @@ EXP_ST void setup_dirs_fds(void) {
   if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
 
+  tmp = alloc_printf("%s/cludafl/seeds", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
   tmp = alloc_printf("%s/cludafl/good", out_dir);
   if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
@@ -9403,7 +9436,7 @@ int main(int argc, char** argv) {
         break;
       
       case 'v':
-        run_only_dry_run = 1;
+        ignore_valuation = 1;
         break;
 
       case 's':
