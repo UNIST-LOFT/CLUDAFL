@@ -9564,22 +9564,24 @@ int main(int argc, char** argv) {
   binary_name = strrchr(bin_abspath, '/') + 1; // Get the binary name
 
   // Fork the GPT process
-  pid_t fork_id=fork();
-  if (fork_id == -1) {
-    PFATAL("Failed to fork GPT process");
-  }
-  else if (fork_id==0) {
-    // Execute GPT process
-    u8* gpt_cmd=alloc_printf("python3 %s/gpt.py %s %s", getenv("CLUDAFL"), binary_name, out_dir);
-    int return_code=system(gpt_cmd);
-    if (return_code != 0) {
-      FATAL("Failed to execute GPT process");
+  if (use_llm) {
+    pid_t fork_id=fork();
+    if (fork_id == -1) {
+      PFATAL("Failed to fork GPT process");
     }
-    exit(0);
-  }
-  else {
-    // Parent process
-    llm_pid=fork_id;
+    else if (fork_id==0) {
+      // Execute GPT process
+      u8* gpt_cmd=alloc_printf("python3 %s/gpt.py %s %s", getenv("CLUDAFL"), binary_name, out_dir);
+      int return_code=system(gpt_cmd);
+      if (return_code != 0) {
+        FATAL("Failed to execute GPT process");
+      }
+      exit(0);
+    }
+    else {
+      // Parent process
+      llm_pid=fork_id;
+    }
   }
 
   write_stats_file(0, 0, 0);
