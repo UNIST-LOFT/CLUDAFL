@@ -3333,7 +3333,9 @@ static void perform_dry_run(char** argv) {
     if (ignore_valuation) {
       if (check_target_covered()) {
         u8* filename = alloc_printf("%s/cludafl/seeds/%s", out_dir, fn);
-        link_or_copy(q->fname, filename);
+        fd = open(filename, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        ck_write(fd, use_mem, q->len, filename);
+        close(fd);
         ck_free(filename);
       }
     } else {
@@ -3803,7 +3805,9 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
       // CLUDAFL: Save run results if covered target
       if (check_target_covered()) {
         u8* save_filename = alloc_printf("%s/cludafl/seeds/id:%06u,%llu,%s", out_dir, queued_paths, prox_score, describe_op(hnb));
-        link_or_copy(fn, save_filename);
+        int fd = open(save_filename, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        ck_write(fd, mem, len, save_filename);
+        close(fd);
         ck_free(save_filename);
       }
     }
