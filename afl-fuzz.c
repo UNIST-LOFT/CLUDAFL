@@ -9711,7 +9711,10 @@ stop_fuzzing:
   destroy_extras();
   ck_free(target_path);
   ck_free(sync_id);
-  kill(llm_pid, SIGTERM);
+  if (use_llm) {
+    if (llm_pid > 1)
+      kill(llm_pid, SIGTERM);
+  }
 
   alloc_report();
 
