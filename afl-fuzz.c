@@ -298,6 +298,7 @@ static u64 total_llm_input_cnt = 0;
 static pid_t llm_pid = -1; // pid of llm python server
 static u64 prev_llm_input_time = 0;
 static u8 ignore_valuation = 0; // Ignore valuation
+static u8 only_dry_run = 0;
 
 static struct hashmap *val_hashmap = NULL;
 
@@ -3195,15 +3196,32 @@ static char *array_print(struct array *arr) {
   return str;
 }
 
+static char *trace_print(u8 *trace_local) {
+  char *str = ck_alloc_nozero(MAP_SIZE + 1);
+  // Convert simplified trace to string (1 is miss, 128 is hit)
+  for (u32 i = 0; i < MAP_SIZE; i++) {
+    str[i] = trace_local[i] == 1 ? '0' : '1';  // 0 is miss, 1 is hit
+  }
+  str[MAP_SIZE] = '\0';
+  return str;
+}
+
 static void save_dry_run(FILE *save_file, struct queue_entry *q, u64 exec_len, u8 res) {
 
   char *fn = q->fname;
   u32 hash = q->input_hash;
   u32 dfg_hash = q->dfg_hash;
   char *vec_str = array_print(q->dfg_arr);
-  fprintf(save_file, "[seed] [file %s] [hash %u] [dfg %u] [res %d] [time %llu] [vec %s]\n", fn, hash, dfg_hash, res, exec_len, vec_str);
-  LOGF("[save_dry_run] [file %s] [hash %u] [dfg %u] [res %d] [exec-time %llu] [time %llu] [vec %s]\n", fn, hash, dfg_hash, res, exec_len, get_cur_time() - start_time, vec_str);
+  u8 target = check_target_covered();
+  u8 *trace_bits_local = ck_alloc_nozero(MAP_SIZE);
+  memcpy(trace_bits_local, trace_bits, MAP_SIZE);
+  simplify_trace(trace_bits_local);
+  char *trace_str = trace_print(trace_bits_local);
+  fprintf(save_file, "[seed] [file %s] [hash %u] [dfg %u] [res %d] [time %llu] [target %d] [vec %s] [trace %s]\n", fn, hash, dfg_hash, res, exec_len, target, vec_str, trace_str);
+  LOGF("[save_dry_run] [file %s] [hash %u] [dfg %u] [res %d] [exec-time %llu] [time %llu] [target %d] [vec %s]\n", fn, hash, dfg_hash, res, exec_len, get_cur_time() - start_time, target, vec_str);
   ck_free(vec_str);
+  ck_free(trace_str);
+  ck_free(trace_bits_local);
 
 }
 
@@ -9230,7 +9248,6 @@ int main(int argc, char** argv) {
   u8  mem_limit_given = 0;
   u8  exit_1 = !!getenv("AFL_BENCH_JUST_ONE");
   char** use_argv;
-  u8 run_only_dry_run = 0;
 
   struct timeval tv;
   struct timezone tz;
@@ -9242,7 +9259,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:p:vs:l")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:p:vs:lr")) > 0)
 
     switch (opt) {
 
@@ -9456,6 +9473,10 @@ int main(int argc, char** argv) {
       case 'l':
         use_llm=1;
         break;
+      
+      case 'r':
+        only_dry_run = 1;
+        break;
 
       default:
 
@@ -9551,7 +9572,7 @@ int main(int argc, char** argv) {
 
   perform_dry_run(use_argv);
 
-  if (run_only_dry_run) {
+  if (only_dry_run) {
     OKF("Dry run finished, exiting.");
     exit(0);
   } else if (select_strategy == SELECT_CLUSTER) {
