@@ -359,6 +359,47 @@ enum {
   } while (0)
 
 
+char *sbsv_escape_square_brackets(char *original) {
+  // Check for NULL input
+  if (original == NULL) {
+    return NULL;
+  }
+  
+  // Count square brackets and get original length
+  int bracket_count = 0;
+  int original_length = 0;
+  for (int i = 0; original[i] != '\0'; i++) {
+    if (original[i] == '[' || original[i] == ']') {
+      bracket_count++;
+    }
+    original_length++;
+  }
+  
+  // Allocate memory for the new string
+  // Size: original length + bracket count (for backslashes) + 1 (null terminator)
+  char *escaped = (char *) ck_alloc(original_length + bracket_count + 1);
+  if (escaped == NULL) {
+    return NULL;  // Memory allocation failed
+  }
+  
+  // Copy original to new string, escaping square brackets
+  int j = 0;  // Index for the escaped string
+  for (int i = 0; original[i] != '\0'; i++) {
+    if (original[i] == '[' || original[i] == ']') {
+      // Add backslash before bracket
+      escaped[j++] = '\\';
+    }
+    // Add the current character
+    escaped[j++] = original[i];
+  }
+  
+  // Null-terminate the escaped string
+  escaped[j] = '\0';
+  
+  return escaped;
+}
+
+
 static u8 check_valid_res(u8 res) {
   return res == FAULT_CRASH || res == FAULT_NONE;
 }
@@ -2938,13 +2979,15 @@ static u32 hash_file(u8 *filename) {
 static void save_valuation(u32 val_hash, u8 *valuation_file, u8 crashed) {
   u8 *target_file = alloc_printf("memory/%s/id:%06llu", crashed ? "neg" : "pos",
                                   crashed ? total_saved_crashes : total_saved_positives);
+  u8 *escaped = sbsv_escape_square_brackets(target_file);
   LOGF("[PacFuzz] [save_valuation] [%s] [seed %d] [entry %d] [id %llu] [hash %u] [time %llu] [file %s]\n", crashed == 1 ? "neg" : "pos", queue_cur ? queue_cur->entry_id : -1, queue_last ? queue_last->entry_id : -1,
-       crashed ? total_saved_crashes : total_saved_positives, val_hash, get_cur_time() - start_time, target_file);
+       crashed ? total_saved_crashes : total_saved_positives, val_hash, get_cur_time() - start_time, escaped);
   u8 *target_file_full = alloc_printf("%s/%s", out_dir, target_file);
   rename(valuation_file, target_file_full);
   ck_free(valuation_file);
   ck_free(target_file);
   ck_free(target_file_full);
+  ck_free(escaped);
   if (crashed) {
     total_saved_crashes++;
   } else {
@@ -3209,6 +3252,7 @@ static char *trace_print(u8 *trace_local) {
 static void save_dry_run(FILE *save_file, struct queue_entry *q, u64 exec_len, u8 res) {
 
   char *fn = q->fname;
+  char *escaped = sbsv_escape_square_brackets(fn);
   u32 hash = q->input_hash;
   u32 dfg_hash = q->dfg_hash;
   char *vec_str = array_print(q->dfg_arr);
@@ -3217,11 +3261,12 @@ static void save_dry_run(FILE *save_file, struct queue_entry *q, u64 exec_len, u
   memcpy(trace_bits_local, trace_bits, MAP_SIZE);
   simplify_trace(trace_bits_local);
   char *trace_str = trace_print(trace_bits_local);
-  fprintf(save_file, "[seed] [file %s] [hash %u] [dfg %u] [res %d] [time %llu] [target %d] [vec %s] [trace %s]\n", fn, hash, dfg_hash, res, exec_len, target, vec_str, trace_str);
-  LOGF("[save_dry_run] [file %s] [hash %u] [dfg %u] [res %d] [exec-time %llu] [time %llu] [target %d] [vec %s]\n", fn, hash, dfg_hash, res, exec_len, get_cur_time() - start_time, target, vec_str);
+  fprintf(save_file, "[seed] [file %s] [hash %u] [dfg %u] [res %d] [time %llu] [target %d] [vec %s] [trace %s]\n", escaped, hash, dfg_hash, res, exec_len, target, vec_str, trace_str);
+  LOGF("[save_dry_run] [file %s] [hash %u] [dfg %u] [res %d] [exec-time %llu] [time %llu] [target %d] [vec %s]\n", escaped, hash, dfg_hash, res, exec_len, get_cur_time() - start_time, target, vec_str);
   ck_free(vec_str);
   ck_free(trace_str);
   ck_free(trace_bits_local);
+  ck_free(escaped);
 
 }
 
@@ -3248,7 +3293,9 @@ static void perform_dry_run_single(char** argv, struct queue_entry *q) {
   close(fd);
 
   res = calibrate_case(argv, q, use_mem, 0, 1);
-  LOGF("[dry-run] [entry %d] [file %s] [hash %u] [dfg %u] [res %d] [prox %lld] [pre %lld]\n", q->entry_id, q->fname, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
+  u8 *fn_escaped = sbsv_escape_square_brackets(fn);
+  LOGF("[dry-run] [entry %d] [file %s] [hash %u] [dfg %u] [res %d] [prox %lld] [pre %lld]\n", q->entry_id, fn_escaped, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
+  ck_free(fn_escaped);
 
   u8 has_unique_memval = get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc());
   if (has_unique_memval) {
@@ -3345,7 +3392,9 @@ static void perform_dry_run(char** argv) {
     close(fd);
 
     res = calibrate_case(argv, q, use_mem, 0, 1);
-    LOGF("[dry-run] [entry %d] [file %s] [hash %u] [dfg %u] [res %d] [prox %lld] [pre %lld]\n", q->entry_id, q->fname, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
+    u8 *fn_escaped = sbsv_escape_square_brackets(fn);
+    LOGF("[dry-run] [entry %d] [file %s] [hash %u] [dfg %u] [res %d] [prox %lld] [pre %lld]\n", q->entry_id, fn_escaped, q->input_hash, q->dfg_hash, res, compute_proximity_score(), q->prox_score);
+    ck_free(fn_escaped);
 
     save_dry_run(save_file, q, q->exec_us, res);
     if (ignore_valuation) {
