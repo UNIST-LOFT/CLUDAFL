@@ -71,10 +71,10 @@ afl-as: afl-as.c afl-as.h $(COMM_HDR) | test_x86
 
 ifndef USE_GSL
 afl-fuzz: afl-fuzz.c afl-fuzz.h $(COMM_HDR) | test_x86	
-	$(CC) $(CFLAGS) -g -O0 -fsanitize=address $@.c -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) -g -O0 $@.c -o $@ $(LDFLAGS)
 else
 afl-fuzz: afl-fuzz.c afl-fuzz.h $(COMM_HDR) | test_x86	
-	$(CC) $(CFLAGS) -g -O0 -fsanitize=address $@.c -o $@ $(LDFLAGS) -lgsl -DUSE_GSL
+	$(CC) $(CFLAGS) -g -O0 $@.c -o $@ $(LDFLAGS) -lgsl -DUSE_GSL
 endif
 
 afl-showmap: afl-showmap.c $(COMM_HDR) | test_x86

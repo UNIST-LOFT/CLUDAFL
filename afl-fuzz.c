@@ -3816,6 +3816,7 @@ void predict_clusters(u8 *out_file) {
 /* Check if the result of an execve() during routine fuzzing is interesting,
    save or queue the input test case for further analysis if so. Returns 1 if
    entry is saved, 0 otherwise. */
+u64 total_reached_inputs=0;
 
 static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
@@ -3848,6 +3849,10 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
     if (!(hnb = has_new_bits(virgin_bits))) {
+      if (check_target_covered()) {
+        // count
+        total_reached_inputs++;
+      }
       if (crash_mode) total_crashes++;
       return 0;
     }
@@ -3871,7 +3876,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     if (ignore_valuation) {
       // CLUDAFL: Save run results if covered target
       if (check_target_covered()) {
-        u8* save_filename = alloc_printf("%s/cludafl/seeds/id:%06u,%llu,%s", out_dir, queued_paths, prox_score, describe_op(hnb));
+        u8* save_filename = alloc_printf("%s/cludafl/seeds/id:%06u,%lld,%llu,%s", out_dir, queued_paths, get_cur_time() - start_time, prox_score, describe_op(hnb));
         int fd = open(save_filename, O_WRONLY | O_CREAT | O_EXCL, 0600);
         ck_write(fd, mem, len, save_filename);
         close(fd);
@@ -4165,6 +4170,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              orig_cmdline, slowest_exec_ms);
              /* ignore errors */
 
+  fprintf(f, "total_reached_inputs: %llu\n", total_reached_inputs);
   /* Get rss value from the children
      We must have killed the forkserver process and called waitpid
      before calling getrusage */
