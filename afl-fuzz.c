@@ -3817,6 +3817,7 @@ void predict_clusters(u8 *out_file) {
    save or queue the input test case for further analysis if so. Returns 1 if
    entry is saved, 0 otherwise. */
 u64 total_reached_inputs=0;
+const u64 MAX_REACHED_INPUTS=2000000;
 
 static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
@@ -3846,13 +3847,22 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
           is_interesting = 1;
       }
     }
+
+    if (ignore_valuation) {
+      // CLUDAFL: Save run results if covered target
+      if (check_target_covered() && total_reached_inputs < MAX_REACHED_INPUTS) {
+        total_reached_inputs++;
+        u8* save_filename = alloc_printf("%s/cludafl/seeds/id:%06u,%lld,%llu,%s", out_dir, queued_paths, get_cur_time() - start_time, prox_score, describe_op(hnb));
+        int fd = open(save_filename, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        ck_write(fd, mem, len, save_filename);
+        close(fd);
+        ck_free(save_filename);
+      }
+    }
+
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
     if (!(hnb = has_new_bits(virgin_bits))) {
-      if (check_target_covered()) {
-        // count
-        total_reached_inputs++;
-      }
       if (crash_mode) total_crashes++;
       return 0;
     }
@@ -3872,17 +3882,6 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     add_to_queue(fn, len, 0, prox_score);
     LOGF("[seed] [seed %d] [new-entry %d] [prox %lld] [time %lld]\n", queue_cur->entry_id, queue_last->entry_id, prox_score, get_cur_time() - start_time);
-    
-    if (ignore_valuation) {
-      // CLUDAFL: Save run results if covered target
-      if (check_target_covered()) {
-        u8* save_filename = alloc_printf("%s/cludafl/seeds/id:%06u,%lld,%llu,%s", out_dir, queued_paths, get_cur_time() - start_time, prox_score, describe_op(hnb));
-        int fd = open(save_filename, O_WRONLY | O_CREAT | O_EXCL, 0600);
-        ck_write(fd, mem, len, save_filename);
-        close(fd);
-        ck_free(save_filename);
-      }
-    }
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
