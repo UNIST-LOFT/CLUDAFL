@@ -3287,8 +3287,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
       if (total_reached > 461 || (first_found_time > 0 && time_spend > 10 * 60 * 1000)) {
         stop_soon = 2;
       }
-      fn = alloc_printf("%s/reached/id:%06u,%llu,%s", total_reached, get_cur_time() - start_time, describe_op(hnb));
-      LOGF("[reached] [found %u] [fn %s] [time %llu]", total_reached, fn, get_cur_time() - start_time);
+      fn = alloc_printf("%s/reached/id:%06u,%llu,%s", out_dir, total_reached, get_cur_time() - start_time, describe_op(hnb));
+      LOGF("[reached] [found %u] [fn %s] [time %llu]", total_reached, fn, get_cur_time() - start_time); 
       fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
       ck_write(fd, mem, len, fn);
       close(fd);
