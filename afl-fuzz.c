@@ -271,6 +271,10 @@ static u64 avg_prox_score = 0;        /* Average of proximity scores      */
 static u32 no_dfg_schedule = 0;      /* No DFG-based seed scheduling     */
 static u32 t_x = 0;                   /* To test AFLGo's scheduling       */
 
+static u32 dfg_target_idx = 0;
+static u32 total_reached = 0;
+static u64 first_found_time = 0;
+
 static u8* (*post_handler)(u8* buf, u32* len);
 
 /* Interesting values, as per config.h */
@@ -3252,6 +3256,9 @@ static void write_crash_readme(void) {
 
 }
 
+static u8 check_target_covered() {
+  return dfg_bits[dfg_target_idx] != 0;
+}
 
 /* Check if the result of an execve() during routine fuzzing is interesting,
    save or queue the input test case for further analysis if so. Returns 1 if
@@ -3265,10 +3272,28 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  keeping = 0, res;
   u64 prox_score;
 
-  if (fault == crash_mode) {
+  if (fault == FAULT_NONE || res == FAULT_CRASH) {
 
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
+    
+    if (check_target_covered()) {
+      total_reached++;
+      if (total_reached == 1) {
+        first_found_time = get_cur_time();
+      }
+      u64 time_spend = get_cur_time() - first_found_time;
+      // Run 10 minutes more
+      if (total_reached > 461 || (first_found_time > 0 && time_spend > 10 * 60 * 1000)) {
+        stop_soon = 2;
+      }
+      fn = alloc_printf("%s/reached/id:%06u,%llu,%s", total_reached, get_cur_time() - start_time, describe_op(hnb));
+      LOGF("[reached] [found %u] [fn %s] [time %llu]", total_reached, fn, get_cur_time() - start_time);
+      fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+      ck_write(fd, mem, len, fn);
+      close(fd);
+      ck_free(fn);
+    }
 
     if (!(hnb = has_new_bits(virgin_bits))) {
       if (crash_mode) total_crashes++;
@@ -3952,6 +3977,10 @@ static void maybe_delete_out_dir(void) {
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
+  fn = alloc_printf("%s/reached", out_dir);
+  if (delete_files(fn, NULL)) goto dir_cleanup_failed;
+  ck_free(fn);
+  
   /* And now, for some finishing touches. */
 
   fn = alloc_printf("%s/.cur_input", out_dir);
@@ -7359,6 +7388,10 @@ EXP_ST void setup_dirs_fds(void) {
   if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
 
+  tmp = alloc_printf("%s/reached", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
   /* Generally useful file descriptors. */
 
   dev_null_fd = open("/dev/null", O_RDWR);
@@ -7908,6 +7941,7 @@ void init_dfg(char *dfg_filename) {
     push_back(dfg_info_vector, node_info);
     if (score > max_score) {
       max_score = score;
+      dfg_target_idx = index;
     }
     index++;
   }
