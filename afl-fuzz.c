@@ -3284,9 +3284,10 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
       }
       u64 time_spend = get_cur_time() - first_found_time;
       // Run 10 minutes more
-      if (total_reached > 461 || (first_found_time > 0 && time_spend > 10 * 60 * 1000)) {
-        stop_soon = 2;
-      }
+      stop_soon = 2;
+      // if (total_reached > 461 || (first_found_time > 0 && time_spend > 10 * 60 * 1000)) {
+        
+      // }
       fn = alloc_printf("%s/reached/id:%06u,%llu", out_dir, total_reached, get_cur_time() - start_time);
       LOGF("[reached] [found %u] [fn %s] [time %llu]\n", total_reached, fn, get_cur_time() - start_time); 
       fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
